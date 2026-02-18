@@ -1,0 +1,1333 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gestión de Pedidos - Delivery App</title>
+<style>
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  margin: 0;
+  padding: 20px;
+  background: #f5f5f5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Prevenir zoom en inputs en iOS */
+input[type="text"],
+input[type="file"],
+textarea {
+  font-size: 16px !important;
+}
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+h1 {
+  color: #333;
+  text-align: center;
+  margin-bottom: 30px;
+}
+
+h2 {
+  color: #555;
+  margin-top: 30px;
+  margin-bottom: 15px;
+  border-bottom: 2px solid #4CAF50;
+  padding-bottom: 10px;
+}
+
+.section {
+  background: white;
+  padding: 20px;
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+  margin-bottom: 20px;
+}
+
+textarea {
+  width: 100%;
+  padding: 12px;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 150px;
+}
+
+textarea:focus {
+  outline: none;
+  border-color: #4CAF50;
+}
+
+button {
+  padding: 10px 20px;
+  margin: 5px 5px 5px 0;
+  cursor: pointer;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.3s;
+}
+
+.btn-primary {
+  background: #4CAF50;
+  color: white;
+}
+
+.btn-primary:hover {
+  background: #45a049;
+}
+
+.btn-danger {
+  background: #f44336;
+  color: white;
+}
+
+.btn-danger:hover {
+  background: #da190b;
+}
+
+.btn-warning {
+  background: #ff9800;
+  color: white;
+}
+
+.btn-warning:hover {
+  background: #e68900;
+}
+
+.btn-info {
+  background: #2196F3;
+  color: white;
+}
+
+.btn-info:hover {
+  background: #0b7dda;
+}
+
+.btn-success {
+  background: #25D366;
+  color: white;
+}
+
+.btn-success:hover {
+  background: #1da851;
+}
+
+#listaPedidos {
+  position: relative;
+  min-height: 200px;
+}
+
+.pedido {
+  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+  padding: 20px;
+  margin: 15px 0;
+  border-radius: 10px;
+  border-left: 5px solid #4CAF50;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+  position: relative;
+  cursor: move;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.pedido:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+}
+
+.pedido.dragging {
+  opacity: 0.5;
+  border-left-color: #ff9800;
+}
+
+.pedido-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.pedido-numero {
+  font-size: 24px;
+  font-weight: bold;
+  color: #4CAF50;
+}
+
+.pedido-info {
+  margin: 10px 0;
+  line-height: 1.6;
+}
+
+.pedido-info strong {
+  color: #333;
+  display: inline-block;
+  min-width: 120px;
+}
+
+.pedido-buttons {
+  margin-top: 15px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pedido-buttons button {
+  flex: 1;
+  min-width: 120px;
+  font-size: 13px;
+  padding: 8px 12px;
+}
+
+.pedido-map-input {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid #ddd;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.pedido-map-input input {
+  flex: 1;
+  padding: 8px;
+  border: 2px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.pedido-map-input input:focus {
+  outline: none;
+  border-color: #4CAF50;
+}
+
+.pedido-map-input button {
+  padding: 8px 15px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.mapa-container {
+  margin-top: 20px;
+}
+
+#mapa {
+  width: 100%;
+  height: 500px;
+  border-radius: 10px;
+  border: 2px solid #ddd;
+  z-index: 1;
+}
+
+.leaflet-container {
+  border-radius: 10px;
+}
+
+.map-url-input {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 15px;
+}
+
+.map-url-input input {
+  flex: 1;
+  padding: 10px;
+  border: 2px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.map-url-input input:focus {
+  outline: none;
+  border-color: #4CAF50;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 40px;
+  color: #999;
+}
+
+.empty-state p {
+  font-size: 18px;
+  margin: 10px 0;
+}
+
+.actions-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.pedido-actions {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 2px solid #ddd;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pedido-actions-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pedido-actions-row button {
+  flex: 1;
+  min-width: calc(50% - 4px);
+}
+
+.btn-camera {
+  background: #9C27B0;
+  color: white;
+}
+
+.btn-camera:hover {
+  background: #7B1FA2;
+}
+
+.btn-route {
+  background: #FF5722;
+  color: white;
+}
+
+.btn-route:hover {
+  background: #E64A19;
+}
+
+.btn-notify {
+  background: #FFC107;
+  color: #000;
+}
+
+.btn-notify:hover {
+  background: #FFB300;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  body {
+    padding: 10px;
+  }
+  
+  .container {
+    max-width: 100%;
+  }
+  
+  .section {
+    padding: 15px;
+  }
+  
+  h1 {
+    font-size: 24px;
+  }
+  
+  h2 {
+    font-size: 18px;
+  }
+  
+  .pedido {
+    padding: 15px;
+    margin: 10px 0;
+  }
+  
+  .pedido-numero {
+    font-size: 20px;
+  }
+  
+  .pedido-info {
+    font-size: 14px;
+  }
+  
+  .pedido-info strong {
+    min-width: 100px;
+    font-size: 13px;
+  }
+  
+  .pedido-buttons {
+    flex-direction: column;
+  }
+  
+  .pedido-buttons button {
+    min-width: 100%;
+    width: 100%;
+    padding: 12px;
+    font-size: 14px;
+  }
+  
+  .pedido-actions-row {
+    flex-direction: column;
+  }
+  
+  .pedido-actions-row button {
+    min-width: 100%;
+    width: 100%;
+    padding: 12px;
+    font-size: 14px;
+  }
+  
+  .actions-bar {
+    flex-direction: column;
+  }
+  
+  .actions-bar button {
+    width: 100%;
+  }
+  
+  .map-url-input {
+    flex-direction: column;
+  }
+  
+  .map-url-input input {
+    width: 100%;
+  }
+  
+  #mapa {
+    height: 400px;
+  }
+  
+  textarea {
+    font-size: 16px; /* Evita zoom en iOS */
+    min-height: 120px;
+  }
+  
+  input {
+    font-size: 16px; /* Evita zoom en iOS */
+  }
+  
+  button {
+    padding: 12px 16px;
+    font-size: 15px;
+    touch-action: manipulation; /* Mejora respuesta táctil */
+  }
+  
+  .pedido-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  
+  .pedido-header button {
+    align-self: flex-end;
+  }
+  
+  .pedido-info {
+    font-size: 14px;
+    line-height: 1.8;
+  }
+  
+  .pedido-info strong {
+    display: block;
+    margin-top: 8px;
+    margin-bottom: 4px;
+  }
+  
+  h1 {
+    margin-bottom: 20px;
+  }
+  
+  h2 {
+    margin-top: 20px;
+    margin-bottom: 12px;
+  }
+}
+</style>
+</head>
+
+<body>
+<div class="container">
+  <h1>🚚 Gestión de Pedidos Delivery</h1>
+
+  <div class="section">
+    <h2>📋 Pegar Formato de Pedido</h2>
+    <textarea id="textoPedido" placeholder="Pega aquí el formato del pedido..."></textarea>
+    <br><br>
+    <div class="map-url-input">
+      <input type="text" id="mapUrlPedido" placeholder="URL de Google Maps para este pedido (opcional)">
+    </div>
+    <br>
+    <button class="btn-primary" onclick="procesarPedido()">Procesar Pedido</button>
+  </div>
+
+  <div class="section">
+    <div class="actions-bar">
+      <h2 style="margin: 0; border: none; padding: 0;">📦 Lista de Pedidos</h2>
+      <button class="btn-danger" onclick="eliminarTodos()">🗑️ Eliminar Todos</button>
+    </div>
+    
+    <div id="listaPedidos">
+      <div class="empty-state" id="emptyState">
+        <p>No hay pedidos aún</p>
+        <p style="font-size: 14px;">Pega un formato de pedido arriba para comenzar</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>🗺️ Mapa de Entregas</h2>
+    <div class="map-url-input">
+      <input type="text" id="mapUrl" placeholder="Pega URL de Google Maps o escribe una dirección">
+      <button class="btn-primary" onclick="cargarMapaDesdeURL()">Cargar en Mapa</button>
+    </div>
+    <div id="mapa" class="mapa-container"></div>
+  </div>
+</div>
+
+<!-- Leaflet CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+let pedidos = JSON.parse(localStorage.getItem("pedidos")) || [];
+let mapa = null;
+let marcadores = []; // Array de objetos {pedidoId, marker}
+let nextPedidoId = 1;
+
+// Inicializar mapa con Leaflet
+function initMap() {
+  mapa = L.map('mapa').setView([4.6097, -74.0817], 12); // Bogotá por defecto
+  
+  // Agregar capa de OpenStreetMap
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 19
+  }).addTo(mapa);
+  
+  actualizarMarcadores();
+}
+
+// Procesar texto del pedido
+function procesarPedido() {
+  const texto = document.getElementById("textoPedido").value.trim();
+  
+  if (!texto) {
+    alert("Por favor, pega el formato del pedido");
+    return;
+  }
+
+  // Extraer número de pedido (si existe al inicio)
+  const numeroMatch = texto.match(/^(\d+):/);
+  const numeroPedido = numeroMatch ? parseInt(numeroMatch[1]) : null;
+
+  // Extraer dirección
+  const direccionMatch = texto.match(/📍\s*Dirección completa[^\n]*:\s*([^\n]+(?:\n[^\n]+)*?)(?=\n|$)/);
+  const direccion = direccionMatch ? direccionMatch[1].trim().replace(/\n/g, ' ') : '';
+
+  // Extraer nombre
+  const nombreMatch = texto.match(/🙋🏻\s*Nombre[^\n]*:\s*([^\n]+)/);
+  const nombre = nombreMatch ? nombreMatch[1].trim() : '';
+
+  // Extraer teléfono
+  const telefonoMatch = texto.match(/📲\s*Número de celular[^\n]*:\s*([^\n]+)/);
+  const telefono = telefonoMatch ? telefonoMatch[1].trim().replace(/\D/g, '') : '';
+
+  // Extraer valor (manejar comas y puntos como separadores de miles)
+  const valorMatch = texto.match(/💰\s*Valor a pagar[^\n]*:\s*([^\n]+)/);
+  let valor = valorMatch ? valorMatch[1].trim() : '0';
+  // Remover comas y puntos que sean separadores de miles, pero mantener el formato numérico
+  valor = valor.replace(/[^\d]/g, ''); // Remover todo excepto dígitos
+  if (!valor || valor === '') valor = '0';
+
+  // Extraer productos
+  const productoMatch = texto.match(/Producto\s*🎁[^\n]*:\s*([^\n]+(?:\n[^\n]+)*?)(?=\n|$)/);
+  const productos = productoMatch ? productoMatch[1].trim().split('\n').filter(p => p.trim()) : [];
+
+  // Obtener URL del mapa del campo de entrada
+  const mapUrl = document.getElementById("mapUrlPedido").value.trim();
+
+  // Determinar ID del pedido
+  let pedidoId;
+  if (numeroPedido) {
+    // Si el número ya existe, usar el siguiente disponible
+    if (pedidos.some(p => p.id === numeroPedido)) {
+      pedidoId = Math.max(...pedidos.map(p => p.id), 0) + 1;
+    } else {
+      pedidoId = numeroPedido;
+    }
+  } else {
+    pedidoId = Math.max(...pedidos.map(p => p.id), 0) + 1;
+  }
+
+  const nuevoPedido = {
+    id: pedidoId,
+    nombre: nombre,
+    telefono: telefono,
+    direccion: direccion,
+    productos: productos,
+    valor: valor,
+    textoOriginal: texto,
+    mapUrl: mapUrl // URL del mapa asociada al pedido
+  };
+
+  pedidos.push(nuevoPedido);
+  guardarPedidos();
+  renderPedidos();
+  
+  // Si hay URL de mapa, procesarla y agregar marcador permanente
+  if (mapUrl) {
+    // Esperar un momento para asegurar que el mapa esté inicializado
+    setTimeout(() => {
+      if (!mapa) {
+        console.error('El mapa aún no está inicializado');
+        alert('El mapa no está listo. Por favor, espera un momento e intenta nuevamente.');
+        return;
+      }
+      procesarURLMapaPedido(mapUrl, pedidoId, productos, () => {
+        ajustarVistaMapa();
+      });
+    }, 500);
+  } else if (direccion) {
+    // Si no hay URL pero hay dirección, geocodificar la dirección
+    setTimeout(() => {
+      actualizarMarcadores();
+    }, 500);
+  }
+
+  // Limpiar campos
+  document.getElementById("textoPedido").value = "";
+  document.getElementById("mapUrlPedido").value = "";
+  
+  alert(`Pedido #${pedidoId} agregado exitosamente`);
+}
+
+function guardarPedidos() {
+  localStorage.setItem("pedidos", JSON.stringify(pedidos));
+}
+
+function renderPedidos() {
+  const lista = document.getElementById("listaPedidos");
+  const emptyState = document.getElementById("emptyState");
+  
+  if (pedidos.length === 0) {
+    lista.innerHTML = '<div class="empty-state" id="emptyState"><p>No hay pedidos aún</p><p style="font-size: 14px;">Pega un formato de pedido arriba para comenzar</p></div>';
+    return;
+  }
+
+  lista.innerHTML = "";
+  
+  pedidos.forEach((pedido, index) => {
+    const div = document.createElement("div");
+    div.className = "pedido";
+    div.draggable = true;
+    div.dataset.index = index;
+    div.dataset.id = pedido.id;
+    
+    // Limpiar número de teléfono para WhatsApp (solo números)
+    const telefonoLimpio = pedido.telefono ? pedido.telefono.replace(/\D/g, '') : '';
+    
+    div.innerHTML = `
+      <div class="pedido-header">
+        <div class="pedido-numero">Pedido #${pedido.id}</div>
+        <button class="btn-danger" onclick="eliminarPedido(${index})" style="padding: 5px 10px; font-size: 12px;">✕ Eliminar</button>
+      </div>
+      <div class="pedido-info">
+        <strong>👤 Nombre:</strong> ${pedido.nombre || 'No especificado'}<br>
+        <strong>📞 Teléfono:</strong> ${pedido.telefono || 'No especificado'}<br>
+        <strong>📍 Dirección:</strong> ${pedido.direccion || 'No especificada'}<br>
+        <strong>🎁 Productos:</strong> ${pedido.productos && pedido.productos.length > 0 ? pedido.productos.join(', ') : 'No especificado'}<br>
+        <strong>💰 Valor:</strong> $${parseInt(pedido.valor || 0).toLocaleString('es-CO')}<br>
+      </div>
+      <div class="pedido-buttons">
+        <button class="btn-success" onclick="whatsappLlamar('${telefonoLimpio}')">📞 WhatsApp Llamar</button>
+        <button class="btn-success" onclick="whatsappMensaje('${telefonoLimpio}')">💬 WhatsApp Mensaje</button>
+        <button class="btn-info" onclick="llamar('${telefonoLimpio}')">📱 Llamar Normal</button>
+      </div>
+      <div class="pedido-actions">
+        <div class="pedido-actions-row">
+          <button class="btn-camera" onclick="tomarFotoEntregado(${index}, ${pedido.id})">✅ Foto Entregado</button>
+          <button class="btn-camera" onclick="tomarFotoNoEntregado(${index}, ${pedido.id})">❌ Foto No Entregado</button>
+        </div>
+        <div class="pedido-actions-row">
+          <button class="btn-route" onclick="enrutarPedido(${index}, ${pedido.id})">🗺️ Enrutar</button>
+          <button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id}, '${telefonoLimpio}')">📢 Notificar en Camino</button>
+        </div>
+      </div>
+      <input type="file" id="fotoInput_${pedido.id}" accept="image/*" capture="environment" class="hidden-file-input" onchange="procesarFoto(event, ${index}, ${pedido.id})">
+    `;
+    
+    // Eventos de drag and drop
+    div.addEventListener('dragstart', handleDragStart);
+    div.addEventListener('dragover', handleDragOver);
+    div.addEventListener('drop', handleDrop);
+    div.addEventListener('dragend', handleDragEnd);
+    
+    lista.appendChild(div);
+  });
+}
+
+// Drag and Drop
+let draggedElement = null;
+
+function handleDragStart(e) {
+  draggedElement = this;
+  this.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/html', this.innerHTML);
+}
+
+function handleDragOver(e) {
+  if (e.preventDefault) {
+    e.preventDefault();
+  }
+  e.dataTransfer.dropEffect = 'move';
+  return false;
+}
+
+function handleDrop(e) {
+  if (e.stopPropagation) {
+    e.stopPropagation();
+  }
+  
+  if (draggedElement !== this) {
+    const draggedIndex = parseInt(draggedElement.dataset.index);
+    const targetIndex = parseInt(this.dataset.index);
+    
+    // Reordenar array
+    const [removed] = pedidos.splice(draggedIndex, 1);
+    pedidos.splice(targetIndex, 0, removed);
+    
+    guardarPedidos();
+    renderPedidos();
+    actualizarMarcadores();
+  }
+  
+  return false;
+}
+
+function handleDragEnd(e) {
+  this.classList.remove('dragging');
+}
+
+function eliminarPedido(index) {
+  if (confirm(`¿Estás seguro de eliminar el pedido #${pedidos[index].id}?`)) {
+    pedidos.splice(index, 1);
+    guardarPedidos();
+    renderPedidos();
+    actualizarMarcadores();
+  }
+}
+
+function eliminarTodos() {
+  if (confirm("¿Estás seguro de eliminar TODOS los pedidos? Esta acción no se puede deshacer.")) {
+    pedidos = [];
+    guardarPedidos();
+    renderPedidos();
+    actualizarMarcadores();
+  }
+}
+
+function llamar(numero) {
+  if (!numero) {
+    alert("No hay número de teléfono disponible");
+    return;
+  }
+  // Limpiar número (solo dígitos)
+  const numeroLimpio = numero.toString().replace(/\D/g, '');
+  if (!numeroLimpio) {
+    alert("Número de teléfono inválido");
+    return;
+  }
+  window.location.href = `tel:${numeroLimpio}`;
+}
+
+function whatsappLlamar(numero) {
+  if (!numero) {
+    alert("No hay número de teléfono disponible");
+    return;
+  }
+  // Limpiar número (solo dígitos)
+  const numeroLimpio = numero.toString().replace(/\D/g, '');
+  if (!numeroLimpio) {
+    alert("Número de teléfono inválido");
+    return;
+  }
+  // WhatsApp requiere código de país, si no tiene, asumir Colombia (57)
+  const numeroWhatsApp = numeroLimpio.startsWith('57') ? numeroLimpio : `57${numeroLimpio}`;
+  window.open(`https://wa.me/${numeroWhatsApp}`, "_blank");
+}
+
+function whatsappMensaje(numero) {
+  if (!numero) {
+    alert("No hay número de teléfono disponible");
+    return;
+  }
+  // Limpiar número (solo dígitos)
+  const numeroLimpio = numero.toString().replace(/\D/g, '');
+  if (!numeroLimpio) {
+    alert("Número de teléfono inválido");
+    return;
+  }
+  // WhatsApp requiere código de país, si no tiene, asumir Colombia (57)
+  const numeroWhatsApp = numeroLimpio.startsWith('57') ? numeroLimpio : `57${numeroLimpio}`;
+  window.open(`https://wa.me/${numeroWhatsApp}?text=Hola`, "_blank");
+}
+
+// Variables para manejar el estado de la foto
+let fotoEstado = null; // 'entregado' o 'noEntregado'
+let fotoPedidoIndex = null;
+let fotoPedidoId = null;
+
+// Función para tomar foto de producto entregado
+function tomarFotoEntregado(index, pedidoId) {
+  fotoEstado = 'entregado';
+  fotoPedidoIndex = index;
+  fotoPedidoId = pedidoId;
+  const input = document.getElementById(`fotoInput_${pedidoId}`);
+  if (input) {
+    input.click();
+  }
+}
+
+// Función para tomar foto de producto no entregado
+function tomarFotoNoEntregado(index, pedidoId) {
+  fotoEstado = 'noEntregado';
+  fotoPedidoIndex = index;
+  fotoPedidoId = pedidoId;
+  const input = document.getElementById(`fotoInput_${pedidoId}`);
+  if (input) {
+    input.click();
+  }
+}
+
+// Procesar foto y enviar por WhatsApp
+function procesarFoto(event, index, pedidoId) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const imageData = e.target.result;
+    enviarFotoPorWhatsApp(imageData, pedidoId);
+  };
+  reader.readAsDataURL(file);
+  
+  // Limpiar el input para poder tomar otra foto
+  event.target.value = '';
+}
+
+// Enviar foto por WhatsApp al número de administración
+function enviarFotoPorWhatsApp(imageData, pedidoId) {
+  const numeroAdmin = '573143473582'; // Número de administración con código de país
+  const mensaje = fotoEstado === 'entregado' 
+    ? `Entregado pedido #${pedidoId}` 
+    : `Pedido #${pedidoId} no entregado`;
+  
+  // Verificar si estamos en móvil
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  
+  if (isMobile && navigator.share) {
+    // Usar Web Share API si está disponible (mejor para móviles)
+    // Convertir imageData a blob para compartir
+    fetch(imageData)
+      .then(res => res.blob())
+      .then(blob => {
+        const file = new File([blob], `pedido_${pedidoId}.jpg`, { type: 'image/jpeg' });
+        navigator.share({
+          title: mensaje,
+          text: mensaje,
+          files: [file]
+        }).catch(err => {
+          console.log('Error compartiendo:', err);
+          // Fallback a WhatsApp
+          abrirWhatsAppConMensaje(numeroAdmin, mensaje);
+        });
+      })
+      .catch(err => {
+        console.log('Error procesando imagen:', err);
+        abrirWhatsAppConMensaje(numeroAdmin, mensaje);
+      });
+  } else {
+    // Para desktop o navegadores sin Web Share API
+    abrirWhatsAppConMensaje(numeroAdmin, mensaje);
+  }
+}
+
+// Función auxiliar para abrir WhatsApp con mensaje
+function abrirWhatsAppConMensaje(numero, mensaje) {
+  const url = `https://wa.me/${numero}?text=${encodeURIComponent(mensaje)}`;
+  window.open(url, '_blank');
+  
+  // Mostrar instrucciones
+  setTimeout(() => {
+    alert(`Se abrirá WhatsApp.\n\nPor favor:\n1. Adjunta la foto que acabas de tomar\n2. El mensaje ya está escrito: "${mensaje}"\n\nMensaje: ${mensaje}`);
+  }, 500);
+}
+
+// Función para enrutar hacia el pedido
+function enrutarPedido(index, pedidoId) {
+  const pedido = pedidos[index];
+  if (!pedido) return;
+  
+  // Obtener coordenadas del pedido
+  let lat = null;
+  let lng = null;
+  
+  // Buscar coordenadas en el marcador del mapa
+  const marcadorPedido = marcadores.find(m => m.pedidoId === pedidoId);
+  if (marcadorPedido && marcadorPedido.marker) {
+    const posicion = marcadorPedido.marker.getLatLng();
+    lat = posicion.lat;
+    lng = posicion.lng;
+  }
+  
+  // Si no hay coordenadas del marcador pero hay URL de mapa, extraerlas
+  if (!lat || !lng) {
+    if (pedido.mapUrl) {
+      const match = pedido.mapUrl.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+      if (match) {
+        lat = parseFloat(match[1]);
+        lng = parseFloat(match[2]);
+      }
+    }
+  }
+  
+  // Si tenemos coordenadas, ofrecer opciones de navegación
+  if (lat && lng) {
+    // Detectar si es móvil
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    const isAndroid = /Android/.test(navigator.userAgent);
+    
+    // Crear diálogo para elegir entre Maps y Waze
+    const usarMaps = confirm('¿Usar Google Maps?\n\nOK = Google Maps\nCancelar = Waze');
+    
+    if (usarMaps) {
+      // Google Maps
+      if (isIOS) {
+        // iOS - intentar abrir app, fallback a web
+        const mapsApp = `maps://maps.google.com/maps?daddr=${lat},${lng}&directionsmode=driving`;
+        const mapsWeb = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
+        
+        // Intentar abrir app
+        window.location.href = mapsApp;
+        
+        // Fallback después de un tiempo
+        setTimeout(() => {
+          window.open(mapsWeb, '_blank');
+        }, 1000);
+      } else if (isAndroid) {
+        // Android - usar intent de Android
+        const mapsApp = `google.navigation:q=${lat},${lng}`;
+        const mapsWeb = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
+        
+        // Intentar abrir app
+        window.location.href = mapsApp;
+        
+        // Fallback después de un tiempo
+        setTimeout(() => {
+          window.open(mapsWeb, '_blank');
+        }, 1000);
+      } else {
+        // Desktop - usar web
+        window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`, '_blank');
+      }
+    } else {
+      // Waze
+      if (isMobile) {
+        // Intentar abrir app de Waze
+        window.location.href = `waze://?ll=${lat},${lng}&navigate=yes`;
+        
+        // Fallback a web
+        setTimeout(() => {
+          window.open(`https://waze.com/ul?ll=${lat},${lng}&navigate=yes`, '_blank');
+        }, 1000);
+      } else {
+        window.open(`https://waze.com/ul?ll=${lat},${lng}&navigate=yes`, '_blank');
+      }
+    }
+  } else if (pedido.direccion) {
+    // Si no hay coordenadas pero hay dirección, usar la dirección
+    const direccionEncoded = encodeURIComponent(pedido.direccion);
+    const usarMaps = confirm('¿Usar Google Maps?\n\nOK = Google Maps\nCancelar = Waze');
+    
+    if (usarMaps) {
+      window.open(`https://www.google.com/maps/dir/?api=1&destination=${direccionEncoded}&travelmode=driving`, '_blank');
+    } else {
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      if (isMobile) {
+        window.location.href = `waze://?q=${direccionEncoded}&navigate=yes`;
+        setTimeout(() => {
+          window.open(`https://waze.com/ul?q=${direccionEncoded}&navigate=yes`, '_blank');
+        }, 1000);
+      } else {
+        window.open(`https://waze.com/ul?q=${direccionEncoded}&navigate=yes`, '_blank');
+      }
+    }
+  } else {
+    alert('No hay ubicación disponible para este pedido. Agrega una URL de Google Maps.');
+  }
+}
+
+// Función para notificar al cliente que el repartidor va en camino
+function notificarEnCamino(index, pedidoId, telefonoCliente) {
+  if (!telefonoCliente) {
+    alert('No hay número de teléfono del cliente disponible');
+    return;
+  }
+  
+  const pedido = pedidos[index];
+  const numeroLimpio = telefonoCliente.toString().replace(/\D/g, '');
+  const numeroWhatsApp = numeroLimpio.startsWith('57') ? numeroLimpio : `57${numeroLimpio}`;
+  
+  const mensaje = `Hola! 👋\n\nTe informamos que nuestro repartidor se encuentra en camino hacia tu ubicación para entregar el pedido #${pedidoId}.\n\n📋 Por favor ten en cuenta:\n• Estar pendiente con el dinero en mano\n• El repartidor NO cuenta con cambio\n• El tiempo de espera desde la llegada al punto de entrega es de 10 minutos\n\n💳 Si deseas pagar por Nequi o Daviplata, el número es: 3143645061\n\n¡Gracias por tu compra! 🚚`;
+  
+  const url = `https://wa.me/${numeroWhatsApp}?text=${encodeURIComponent(mensaje)}`;
+  window.open(url, '_blank');
+}
+
+// Funciones del mapa con Leaflet y Nominatim (gratuito)
+function actualizarMarcadores() {
+  if (!mapa) return;
+  
+  // Eliminar marcadores existentes
+  marcadores.forEach(item => mapa.removeLayer(item.marker));
+  marcadores = [];
+  
+  if (pedidos.length === 0) return;
+  
+  // Procesar pedidos con URLs o direcciones
+  let procesamientosCompletados = 0;
+  const pedidosConUbicacion = pedidos.filter(p => p.mapUrl || p.direccion);
+  const totalPedidos = pedidosConUbicacion.length;
+  
+  if (totalPedidos === 0) return;
+  
+  pedidosConUbicacion.forEach((pedido, index) => {
+    setTimeout(() => {
+      if (pedido.mapUrl) {
+        // Si tiene URL, procesarla directamente
+        procesarURLMapaPedido(pedido.mapUrl, pedido.id, pedido.productos, () => {
+          procesamientosCompletados++;
+          if (procesamientosCompletados === totalPedidos) {
+            ajustarVistaMapa();
+          }
+        });
+      } else if (pedido.direccion) {
+        // Si solo tiene dirección, geocodificar
+        geocodificarDireccion(pedido.direccion, pedido.id, pedido.productos, () => {
+          procesamientosCompletados++;
+          if (procesamientosCompletados === totalPedidos) {
+            ajustarVistaMapa();
+          }
+        });
+      }
+    }, index * 1000); // Delay de 1 segundo entre cada procesamiento
+  });
+}
+
+function geocodificarDireccion(direccion, pedidoId, productos, callback) {
+  // Usar Nominatim API (gratuita) para geocodificación
+  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(direccion)}&limit=1`;
+  
+  fetch(url, {
+    headers: {
+      'User-Agent': 'DeliveryApp/1.0'
+    }
+  })
+    .then(response => response.json())
+    .then(data => {
+      if (data && data.length > 0) {
+        const lat = parseFloat(data[0].lat);
+        const lng = parseFloat(data[0].lon);
+        
+        // Crear marcador personalizado con número de pedido
+        const iconHtml = `
+          <div style="background-color: #f44336; color: white; width: 35px; height: 35px; 
+                      border-radius: 50%; display: flex; align-items: center; justify-content: center; 
+                      font-weight: bold; font-size: 14px; border: 3px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.3);">
+            #${pedidoId}
+          </div>
+        `;
+        
+        const customIcon = L.divIcon({
+          html: iconHtml,
+          className: 'custom-marker',
+          iconSize: [35, 35],
+          iconAnchor: [17, 17]
+        });
+        
+        const marker = L.marker([lat, lng], { icon: customIcon }).addTo(mapa);
+        
+        // Crear popup con información
+        const popupContent = `
+          <div style="padding: 5px; min-width: 200px;">
+            <h3 style="margin: 0 0 10px 0; color: #4CAF50; font-size: 16px;">Pedido #${pedidoId}</h3>
+            <p style="margin: 5px 0;"><strong>Dirección:</strong> ${direccion}</p>
+            <p style="margin: 5px 0;"><strong>Productos:</strong> ${productos && productos.length > 0 ? productos.join(', ') : 'No especificado'}</p>
+          </div>
+        `;
+        
+        marker.bindPopup(popupContent);
+        
+        // Guardar marcador con referencia al pedidoId (solo si no es temporal)
+        if (pedidoId !== 'TEMP') {
+          marcadores.push({ pedidoId: pedidoId, marker: marker });
+        }
+        
+        if (callback) callback();
+      } else {
+        console.warn(`No se pudo geocodificar: ${direccion}`);
+        if (callback) callback();
+      }
+    })
+    .catch(error => {
+      console.error('Error en geocodificación:', error);
+      if (callback) callback();
+    });
+}
+
+function ajustarVistaMapa() {
+  if (marcadores.length === 0) return;
+  
+  const markers = marcadores.map(item => item.marker);
+  const group = new L.featureGroup(markers);
+  mapa.fitBounds(group.getBounds().pad(0.1));
+  
+  // Ajustar zoom si hay solo un marcador
+  if (marcadores.length === 1) {
+    mapa.setZoom(15);
+  }
+}
+
+// Procesar URL de mapa para un pedido específico (marcador permanente)
+function procesarURLMapaPedido(url, pedidoId, productos, callback) {
+  if (!mapa) {
+    console.error('El mapa no está inicializado');
+    if (callback) callback();
+    return;
+  }
+  
+  // Extraer coordenadas de diferentes formatos de URL de Google Maps
+  let lat, lng;
+  
+  console.log('Intentando extraer coordenadas de URL:', url);
+  
+  // Formato 1: https://www.google.com/maps/@lat,lng,zoom
+  const match1 = url.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+  if (match1) {
+    lat = parseFloat(match1[1]);
+    lng = parseFloat(match1[2]);
+    console.log('Formato 1 detectado (@lat,lng):', lat, lng);
+  } else {
+    // Formato 2: https://www.google.com/maps/place/.../@lat,lng
+    const match2 = url.match(/place\/[^@]+@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+    if (match2) {
+      lat = parseFloat(match2[1]);
+      lng = parseFloat(match2[2]);
+      console.log('Formato 2 detectado (place/.../@lat,lng):', lat, lng);
+    } else {
+      // Formato 3: https://maps.google.com/?q=lat,lng
+      const match3 = url.match(/[?&]q=(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+      if (match3) {
+        lat = parseFloat(match3[1]);
+        lng = parseFloat(match3[2]);
+        console.log('Formato 3 detectado (?q=lat,lng):', lat, lng);
+      } else {
+        // Formato 4: https://www.google.com/maps/search/?api=1&query=lat,lng
+        const match4 = url.match(/query=(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+        if (match4) {
+          lat = parseFloat(match4[1]);
+          lng = parseFloat(match4[2]);
+          console.log('Formato 4 detectado (query=lat,lng):', lat, lng);
+        } else {
+          // Formato 5: https://www.google.com/maps?ll=lat,lng
+          const match5 = url.match(/[?&]ll=(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+          if (match5) {
+            lat = parseFloat(match5[1]);
+            lng = parseFloat(match5[2]);
+            console.log('Formato 5 detectado (ll=lat,lng):', lat, lng);
+          } else {
+            // Formato 6: Coordenadas directas en el texto (lat, lng) o (lat,lng)
+            const match6 = url.match(/(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)/);
+            if (match6) {
+              lat = parseFloat(match6[1]);
+              lng = parseFloat(match6[2]);
+              console.log('Formato 6 detectado (coordenadas directas):', lat, lng);
+            } else {
+              // Si no es una URL con coordenadas, tratar como dirección y geocodificar
+              console.log('No se encontraron coordenadas en la URL, intentando geocodificar como dirección...');
+              geocodificarDireccion(url, pedidoId, productos || [], callback);
+              return;
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  // Validar coordenadas
+  if (isNaN(lat) || isNaN(lng)) {
+    console.error('Coordenadas inválidas (NaN):', lat, lng, 'URL:', url);
+    alert(`No se pudieron extraer coordenadas válidas de la URL para el pedido #${pedidoId}.\n\nURL ingresada: ${url}\n\nAsegúrate de usar una URL completa de Google Maps que incluya las coordenadas.`);
+    if (callback) callback();
+    return;
+  }
+  
+  // Verificar que las coordenadas estén en un rango válido (permitir lat=0 o lng=0 si están cerca del ecuador/meridiano)
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    console.error('Coordenadas fuera de rango:', lat, lng);
+    alert(`Las coordenadas extraídas están fuera de rango válido para el pedido #${pedidoId}.\n\nLatitud: ${lat}, Longitud: ${lng}`);
+    if (callback) callback();
+    return;
+  }
+  
+  console.log(`Procesando URL para pedido #${pedidoId}:`, url);
+  console.log(`Coordenadas extraídas: lat=${lat}, lng=${lng}`);
+  
+  // Crear marcador permanente con número de pedido
+  const iconHtml = `
+    <div style="background-color: #f44336; color: white; width: 35px; height: 35px; 
+                border-radius: 50%; display: flex; align-items: center; justify-content: center; 
+                font-weight: bold; font-size: 14px; border: 3px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.3);">
+      #${pedidoId}
+    </div>
+  `;
+  
+  const customIcon = L.divIcon({
+    html: iconHtml,
+    className: 'custom-marker',
+    iconSize: [35, 35],
+    iconAnchor: [17, 17]
+  });
+  
+  try {
+    const marker = L.marker([lat, lng], { icon: customIcon });
+    marker.addTo(mapa);
+    
+    // Crear popup con información
+    const popupContent = `
+      <div style="padding: 5px; min-width: 200px;">
+        <h3 style="margin: 0 0 10px 0; color: #4CAF50; font-size: 16px;">Pedido #${pedidoId}</h3>
+        <p style="margin: 5px 0;"><strong>Productos:</strong> ${productos && productos.length > 0 ? productos.join(', ') : 'No especificado'}</p>
+      </div>
+    `;
+    
+    marker.bindPopup(popupContent);
+    
+    // Guardar marcador permanente con referencia al pedidoId
+    marcadores.push({ pedidoId: pedidoId, marker: marker });
+    
+    console.log(`✓ Marcador agregado exitosamente para pedido #${pedidoId} en coordenadas: ${lat}, ${lng}`);
+    console.log(`Total de marcadores: ${marcadores.length}`);
+    
+    // Centrar el mapa en el nuevo marcador
+    mapa.setView([lat, lng], Math.max(mapa.getZoom(), 15));
+    
+    if (callback) callback();
+  } catch (error) {
+    console.error('Error al agregar marcador:', error);
+    alert(`Error al agregar marcador para el pedido #${pedidoId}: ${error.message}`);
+    if (callback) callback();
+  }
+}
+
+// Función para cargar URL temporal en el mapa (no asociada a pedido)
+function cargarMapaDesdeURL() {
+  const url = document.getElementById("mapUrl").value.trim();
+  
+  if (!url) {
+    alert("Por favor, ingresa una URL de Google Maps o una dirección");
+    return;
+  }
+  
+  // Extraer coordenadas de diferentes formatos de URL de Google Maps
+  let lat, lng;
+  
+  // Formato: https://www.google.com/maps/@lat,lng,zoom
+  const match1 = url.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+  if (match1) {
+    lat = parseFloat(match1[1]);
+    lng = parseFloat(match1[2]);
+  } else {
+    // Formato: https://www.google.com/maps/place/.../@lat,lng
+    const match2 = url.match(/place\/[^@]+@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+    if (match2) {
+      lat = parseFloat(match2[1]);
+      lng = parseFloat(match2[2]);
+    } else {
+      // Si no es una URL con coordenadas, tratar como dirección y geocodificar
+      geocodificarDireccion(url, 'TEMP', [], () => {
+        mapa.setZoom(15);
+      });
+      // Vaciar el campo después de cargar
+      document.getElementById("mapUrl").value = "";
+      return;
+    }
+  }
+  
+  if (lat && lng) {
+    // Centrar mapa en la ubicación
+    mapa.setView([lat, lng], 15);
+    
+    // Agregar marcador temporal azul
+    const iconHtml = `
+      <div style="background-color: #2196F3; color: white; width: 35px; height: 35px; 
+                  border-radius: 50%; display: flex; align-items: center; justify-content: center; 
+                  font-weight: bold; font-size: 12px; border: 3px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.3);">
+        📍
+      </div>
+    `;
+    
+    const customIcon = L.divIcon({
+      html: iconHtml,
+      className: 'custom-marker',
+      iconSize: [35, 35],
+      iconAnchor: [17, 17]
+    });
+    
+    const tempMarker = L.marker([lat, lng], { icon: customIcon }).addTo(mapa);
+    tempMarker.bindPopup('Ubicación temporal').openPopup();
+    
+    // Eliminar marcador después de 10 segundos
+    setTimeout(() => {
+      mapa.removeLayer(tempMarker);
+    }, 10000);
+  }
+  
+  // Vaciar el campo después de cargar
+  document.getElementById("mapUrl").value = "";
+}
+
+// Inicializar cuando carga la página
+window.onload = function() {
+  // Cargar pedidos guardados y asegurar que tengan el campo mapUrl
+  pedidos = pedidos.map(pedido => {
+    if (!pedido.hasOwnProperty('mapUrl')) {
+      pedido.mapUrl = '';
+    }
+    return pedido;
+  });
+  guardarPedidos();
+  
+  if (pedidos.length > 0) {
+    nextPedidoId = Math.max(...pedidos.map(p => p.id)) + 1;
+  }
+  
+  renderPedidos();
+  
+  // Inicializar mapa con Leaflet (completamente gratuito)
+  initMap();
+};
+</script>
+
+</body>
+</html>
