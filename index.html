@@ -319,8 +319,69 @@ button {
   background: #FFB300;
 }
 
+.btn-sync {
+  background: #00BCD4;
+  color: white;
+}
+
+.btn-sync:hover {
+  background: #0097A7;
+}
+
 .hidden-file-input {
   display: none;
+}
+
+.sync-section {
+  background: #E3F2FD;
+  padding: 15px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  border: 2px solid #2196F3;
+}
+
+.sync-buttons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 15px;
+}
+
+.sync-code-area {
+  margin-top: 15px;
+}
+
+.sync-code-area textarea {
+  width: 100%;
+  min-height: 100px;
+  padding: 10px;
+  border: 2px solid #2196F3;
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.qr-container {
+  text-align: center;
+  margin-top: 15px;
+  padding: 15px;
+  background: white;
+  border-radius: 8px;
+}
+
+.qr-container canvas {
+  max-width: 100%;
+  height: auto;
+}
+
+.sync-info {
+  background: #FFF3CD;
+  padding: 10px;
+  border-radius: 6px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: #856404;
 }
 
 @media (max-width: 768px) {
@@ -448,6 +509,32 @@ button {
     margin-top: 20px;
     margin-bottom: 12px;
   }
+  
+  .sync-buttons {
+    flex-direction: column;
+  }
+  
+  .sync-buttons button {
+    width: 100%;
+  }
+  
+  .sync-code-area textarea {
+    font-size: 14px;
+    min-height: 80px;
+  }
+  
+  .qr-container canvas {
+    max-width: 250px;
+  }
+  
+  .sync-info {
+    font-size: 12px;
+    padding: 8px;
+  }
+  
+  .sync-info a {
+    font-size: 11px;
+  }
 }
 </style>
 </head>
@@ -455,6 +542,29 @@ button {
 <body>
 <div class="container">
   <h1>🚚 Gestión de Pedidos Delivery</h1>
+
+  <div class="section sync-section">
+    <h2>🔄 Sincronizar Datos</h2>
+    <div class="sync-buttons">
+      <button class="btn-sync" onclick="exportarDatos()">📤 Exportar Datos</button>
+      <button class="btn-sync" onclick="importarDatos()">📥 Importar Datos</button>
+      <button class="btn-sync" onclick="mostrarQR()">📱 Mostrar QR</button>
+    </div>
+    <div class="sync-code-area" id="syncCodeArea" style="display: none;">
+      <textarea id="syncData" placeholder="Pega aquí el código de sincronización o escanea el QR..."></textarea>
+      <button class="btn-primary" onclick="aplicarImportacion()" style="margin-top: 10px; width: 100%;">Aplicar Datos</button>
+    </div>
+    <div class="qr-container" id="qrContainer" style="display: none;">
+      <h3>Escanea este código QR con tu celular:</h3>
+      <canvas id="qrCode"></canvas>
+      <div class="sync-info">
+        <strong>Instrucciones:</strong><br>
+        1. En el PC: Haz clic en "Exportar Datos"<br>
+        2. Copia el código o escanea el QR<br>
+        3. En el celular: Pega el código y haz clic en "Aplicar Datos"
+      </div>
+    </div>
+  </div>
 
   <div class="section">
     <h2>📋 Pegar Formato de Pedido</h2>
@@ -495,6 +605,8 @@ button {
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <!-- Leaflet JS -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- QR Code Library -->
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 
 <script>
 let pedidos = JSON.parse(localStorage.getItem("pedidos")) || [];
@@ -1307,6 +1419,182 @@ function cargarMapaDesdeURL() {
   document.getElementById("mapUrl").value = "";
 }
 
+// Funciones de sincronización entre dispositivos
+function exportarDatos() {
+  if (pedidos.length === 0) {
+    alert('No hay pedidos para exportar');
+    return;
+  }
+  
+  const datos = {
+    pedidos: pedidos,
+    timestamp: new Date().toISOString(),
+    version: '1.0'
+  };
+  
+  const datosJSON = JSON.stringify(datos);
+  const datosCodificados = btoa(unescape(encodeURIComponent(datosJSON)));
+  
+  // Crear enlace compartible
+  const urlCompartir = window.location.origin + window.location.pathname + '?data=' + encodeURIComponent(datosCodificados);
+  
+  // Mostrar el código en el textarea
+  const syncArea = document.getElementById('syncCodeArea');
+  const syncData = document.getElementById('syncData');
+  syncArea.style.display = 'block';
+  syncData.value = datosCodificados;
+  syncData.select();
+  
+  // Generar QR
+  mostrarQR(datosCodificados);
+  
+  // Mostrar enlace compartible
+  const infoDiv = document.querySelector('.sync-info');
+  if (infoDiv) {
+    infoDiv.innerHTML = `
+      <strong>Opciones de sincronización:</strong><br>
+      1. Escanea el código QR con tu celular<br>
+      2. Copia el código de texto y pégalo en tu celular<br>
+      3. Comparte este enlace: <a href="${urlCompartir}" target="_blank" style="word-break: break-all; color: #2196F3;">${urlCompartir.substring(0, 50)}...</a><br><br>
+      <strong>Total de pedidos:</strong> ${pedidos.length}
+    `;
+  }
+  
+  // Copiar código al portapapeles si es posible
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(datosCodificados).then(() => {
+      // También intentar copiar el enlace
+      navigator.clipboard.writeText(urlCompartir).catch(() => {});
+    }).catch(() => {});
+  }
+}
+
+function importarDatos() {
+  const syncArea = document.getElementById('syncCodeArea');
+  syncArea.style.display = 'block';
+  document.getElementById('syncData').focus();
+}
+
+function aplicarImportacion() {
+  const datosCodificados = document.getElementById('syncData').value.trim();
+  
+  if (!datosCodificados) {
+    alert('Por favor, pega el código de sincronización');
+    return;
+  }
+  
+  try {
+    // Decodificar datos
+    const datosJSON = decodeURIComponent(escape(atob(datosCodificados)));
+    const datos = JSON.parse(datosJSON);
+    
+    if (!datos.pedidos || !Array.isArray(datos.pedidos)) {
+      throw new Error('Formato de datos inválido');
+    }
+    
+    // Confirmar antes de sobrescribir
+    const confirmar = confirm(
+      `¿Importar ${datos.pedidos.length} pedido(s)?\n\nEsto reemplazará todos los pedidos actuales.`
+    );
+    
+    if (!confirmar) return;
+    
+    // Importar pedidos
+    pedidos = datos.pedidos;
+    
+    // Asegurar que todos tengan mapUrl
+    pedidos = pedidos.map(pedido => {
+      if (!pedido.hasOwnProperty('mapUrl')) {
+        pedido.mapUrl = '';
+      }
+      return pedido;
+    });
+    
+    guardarPedidos();
+    renderPedidos();
+    
+    // Actualizar marcadores después de un momento
+    setTimeout(() => {
+      actualizarMarcadores();
+    }, 500);
+    
+    // Ocultar área de sincronización
+    document.getElementById('syncCodeArea').style.display = 'none';
+    document.getElementById('qrContainer').style.display = 'none';
+    document.getElementById('syncData').value = '';
+    
+    alert(`✅ ${pedidos.length} pedido(s) importado(s) exitosamente!`);
+    
+  } catch (error) {
+    console.error('Error al importar:', error);
+    alert('❌ Error al importar datos. Verifica que el código sea correcto.\n\nError: ' + error.message);
+  }
+}
+
+function mostrarQR(datosCodificados) {
+  const qrContainer = document.getElementById('qrContainer');
+  const canvas = document.getElementById('qrCode');
+  
+  // Si no se pasan datos, usar los datos actuales
+  if (!datosCodificados) {
+    if (pedidos.length === 0) {
+      alert('No hay pedidos para generar QR');
+      return;
+    }
+    const datos = {
+      pedidos: pedidos,
+      timestamp: new Date().toISOString(),
+      version: '1.0'
+    };
+    const datosJSON = JSON.stringify(datos);
+    datosCodificados = btoa(unescape(encodeURIComponent(datosJSON)));
+  }
+  
+  qrContainer.style.display = 'block';
+  
+  // Limpiar canvas anterior
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  // Ajustar tamaño del canvas según el dispositivo
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const qrSize = isMobile ? 250 : 300;
+  
+  canvas.width = qrSize;
+  canvas.height = qrSize;
+  
+  // Generar QR code
+  QRCode.toCanvas(canvas, datosCodificados, {
+    width: qrSize,
+    margin: 2,
+    color: {
+      dark: '#000000',
+      light: '#FFFFFF'
+    }
+  }, function (error) {
+    if (error) {
+      console.error('Error generando QR:', error);
+      qrContainer.innerHTML = '<p style="color: red; padding: 20px;">Error al generar código QR. Usa el código de texto en su lugar.</p>';
+    }
+  });
+}
+
+// Función para detectar si hay datos en la URL (para compartir fácilmente)
+function verificarDatosEnURL() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const datosURL = urlParams.get('data');
+  
+  if (datosURL) {
+    const confirmar = confirm('¿Importar datos desde el enlace compartido?');
+    if (confirmar) {
+      document.getElementById('syncData').value = datosURL;
+      aplicarImportacion();
+      // Limpiar URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }
+}
+
 // Inicializar cuando carga la página
 window.onload = function() {
   // Cargar pedidos guardados y asegurar que tengan el campo mapUrl
@@ -1326,6 +1614,9 @@ window.onload = function() {
   
   // Inicializar mapa con Leaflet (completamente gratuito)
   initMap();
+  
+  // Verificar si hay datos en la URL para importar
+  verificarDatosEnURL();
 };
 </script>
 
