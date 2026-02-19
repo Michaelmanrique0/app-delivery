@@ -151,6 +151,51 @@ button {
   border-left-color: #ff9800;
 }
 
+.pedido.entregado {
+  background: linear-gradient(135deg, #e0e0e0 0%, #bdbdbd 100%);
+  border-left-color: #757575;
+  opacity: 0.85;
+}
+
+.pedido.entregado .pedido-numero {
+  color: #616161;
+}
+
+.pedido.entregado .pedido-info,
+.pedido.entregado .pedido-info strong {
+  color: #757575;
+}
+
+.pedido.entregado:hover {
+  transform: none;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.08);
+}
+
+.pedido.entregado .btn-entregado {
+  display: none;
+}
+
+.pedido.entregado .pedido-actions {
+  display: none;
+}
+
+.pedido.entregado .pedido-no-entregado-wrap {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 2px solid #9e9e9e;
+}
+
+.total-recogido {
+  background: #E8F5E9;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-size: 18px;
+  font-weight: bold;
+  color: #2E7D32;
+  margin-bottom: 15px;
+  border: 2px solid #4CAF50;
+}
+
 .pedido-header {
   display: flex;
   justify-content: space-between;
@@ -582,6 +627,9 @@ button {
       <h2 style="margin: 0; border: none; padding: 0;">📦 Lista de Pedidos</h2>
       <button class="btn-danger" onclick="eliminarTodos()">🗑️ Eliminar Todos</button>
     </div>
+    <div class="total-recogido" id="totalRecogido" style="display: none;">
+      💵 Total recogido (entregados): $<span id="totalRecogidoValor">0</span>
+    </div>
     
     <div id="listaPedidos">
       <div class="empty-state" id="emptyState">
@@ -687,7 +735,8 @@ function procesarPedido() {
     productos: productos,
     valor: valor,
     textoOriginal: texto,
-    mapUrl: mapUrl // URL del mapa asociada al pedido
+    mapUrl: mapUrl, // URL del mapa asociada al pedido
+    entregado: false
   };
 
   pedidos.push(nuevoPedido);
@@ -736,19 +785,31 @@ function renderPedidos() {
 
   lista.innerHTML = "";
   
-  pedidos.forEach((pedido, index) => {
+  // Ordenar: pedidos no entregados primero, entregados al final
+  const pedidosOrdenados = [...pedidos].sort((a, b) => {
+    const aEntregado = a.entregado ? 1 : 0;
+    const bEntregado = b.entregado ? 1 : 0;
+    return aEntregado - bEntregado;
+  });
+  
+  pedidosOrdenados.forEach((pedido, indexOrdenado) => {
+    const index = pedidos.indexOf(pedido);
     const div = document.createElement("div");
-    div.className = "pedido";
-    div.draggable = true;
+    div.className = "pedido" + (pedido.entregado ? " entregado" : "");
+    div.draggable = !pedido.entregado;
     div.dataset.index = index;
     div.dataset.id = pedido.id;
     
     // Limpiar número de teléfono para WhatsApp (solo números)
     const telefonoLimpio = pedido.telefono ? pedido.telefono.replace(/\D/g, '') : '';
     
+    const valorFormato = parseInt(pedido.valor || 0).toLocaleString('es-CO');
+    const btnEntregadoHtml = pedido.entregado ? '' : `<button class="btn-primary btn-entregado" onclick="marcarEntregado(${index})" style="margin-top: 10px; width: 100%;">✅ Entregado / Pedido finalizado</button>`;
+    const btnNoEntregadoHtml = pedido.entregado ? `<div class="pedido-no-entregado-wrap"><button class="btn-warning" onclick="marcarNoEntregado(${index})" style="width: 100%;">↩️ No entregado</button></div>` : '';
+    
     div.innerHTML = `
       <div class="pedido-header">
-        <div class="pedido-numero">Pedido #${pedido.id}</div>
+        <div class="pedido-numero">Pedido #${pedido.id}${pedido.entregado ? ' ✓ Entregado' : ''}</div>
         <button class="btn-danger" onclick="eliminarPedido(${index})" style="padding: 5px 10px; font-size: 12px;">✕ Eliminar</button>
       </div>
       <div class="pedido-info">
@@ -756,7 +817,7 @@ function renderPedidos() {
         <strong>📞 Teléfono:</strong> ${pedido.telefono || 'No especificado'}<br>
         <strong>📍 Dirección:</strong> ${pedido.direccion || 'No especificada'}<br>
         <strong>🎁 Productos:</strong> ${pedido.productos && pedido.productos.length > 0 ? pedido.productos.join(', ') : 'No especificado'}<br>
-        <strong>💰 Valor:</strong> $${parseInt(pedido.valor || 0).toLocaleString('es-CO')}<br>
+        <strong>💰 Valor:</strong> $${valorFormato}<br>
       </div>
       <div class="pedido-buttons">
         <button class="btn-success" onclick="whatsappLlamar('${telefonoLimpio}')">📞 WhatsApp Llamar</button>
@@ -765,14 +826,17 @@ function renderPedidos() {
       </div>
       <div class="pedido-actions">
         <div class="pedido-actions-row">
-          <button class="btn-camera" onclick="tomarFotoEntregado(${index}, ${pedido.id})">✅ Foto Entregado</button>
-          <button class="btn-camera" onclick="tomarFotoNoEntregado(${index}, ${pedido.id})">❌ Foto No Entregado</button>
+          <button class="btn-camera" onclick="abrirWhatsAppFotoEntregado(${pedido.id})">✅ Foto Entregado</button>
+          <button class="btn-camera" onclick="abrirWhatsAppFotoNoEntregado(${pedido.id})">❌ Foto No Entregado</button>
         </div>
         <div class="pedido-actions-row">
-          <button class="btn-route" onclick="enrutarPedido(${index}, ${pedido.id})">🗺️ Enrutar</button>
-          <button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id}, '${telefonoLimpio}')">📢 Notificar en Camino</button>
+          <button class="btn-route" onclick="enrutarConMaps(${index}, ${pedido.id})">🗺️ Maps</button>
+          <button class="btn-route" onclick="enrutarConWaze(${index}, ${pedido.id})">📍 Waze</button>
+          <button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id})">📢 Notificar en Camino</button>
         </div>
       </div>
+      ${btnEntregadoHtml}
+      ${btnNoEntregadoHtml}
       <input type="file" id="fotoInput_${pedido.id}" accept="image/*" capture="environment" class="hidden-file-input" onchange="procesarFoto(event, ${index}, ${pedido.id})">
     `;
     
@@ -784,6 +848,15 @@ function renderPedidos() {
     
     lista.appendChild(div);
   });
+  
+  // Actualizar total recogido (suma de valores de pedidos entregados)
+  const totalRecogido = pedidos.filter(p => p.entregado).reduce((sum, p) => sum + parseInt(p.valor || 0, 10), 0);
+  const elTotal = document.getElementById('totalRecogido');
+  const elValor = document.getElementById('totalRecogidoValor');
+  if (elTotal && elValor) {
+    elValor.textContent = totalRecogido.toLocaleString('es-CO');
+    elTotal.style.display = totalRecogido > 0 ? 'block' : 'none';
+  }
 }
 
 // Drag and Drop
@@ -836,6 +909,30 @@ function eliminarPedido(index) {
     renderPedidos();
     actualizarMarcadores();
   }
+}
+
+function marcarEntregado(index) {
+  const pedido = pedidos[index];
+  if (!pedido) return;
+  pedido.entregado = true;
+  // Mover al final de la lista
+  pedidos.splice(index, 1);
+  pedidos.push(pedido);
+  guardarPedidos();
+  renderPedidos();
+  actualizarMarcadores();
+}
+
+function marcarNoEntregado(index) {
+  const pedido = pedidos[index];
+  if (!pedido) return;
+  pedido.entregado = false;
+  // Mover al inicio (quitar de donde está y poner al principio de los no entregados)
+  pedidos.splice(index, 1);
+  pedidos.unshift(pedido);
+  guardarPedidos();
+  renderPedidos();
+  actualizarMarcadores();
 }
 
 function eliminarTodos() {
@@ -898,26 +995,28 @@ let fotoEstado = null; // 'entregado' o 'noEntregado'
 let fotoPedidoIndex = null;
 let fotoPedidoId = null;
 
-// Función para tomar foto de producto entregado
-function tomarFotoEntregado(index, pedidoId) {
-  fotoEstado = 'entregado';
-  fotoPedidoIndex = index;
-  fotoPedidoId = pedidoId;
-  const input = document.getElementById(`fotoInput_${pedidoId}`);
-  if (input) {
-    input.click();
-  }
+// Abrir WhatsApp con 3143473582 y mensaje para foto entregado
+function abrirWhatsAppFotoEntregado(pedidoId) {
+  const numeroAdmin = '573143473582';
+  const mensaje = `Pedido #${pedidoId} entregado`;
+  window.open(`https://wa.me/${numeroAdmin}?text=${encodeURIComponent(mensaje)}`, '_blank');
 }
 
-// Función para tomar foto de producto no entregado
+// Abrir WhatsApp con 3143473582 y mensaje para foto no entregado
+function abrirWhatsAppFotoNoEntregado(pedidoId) {
+  const numeroAdmin = '573143473582';
+  const mensaje = `Pedido #${pedidoId} no entregado`;
+  window.open(`https://wa.me/${numeroAdmin}?text=${encodeURIComponent(mensaje)}`, '_blank');
+}
+
+// Función para tomar foto de producto entregado (legacy - ya no usa cámara local)
+function tomarFotoEntregado(index, pedidoId) {
+  abrirWhatsAppFotoEntregado(pedidoId);
+}
+
+// Función para tomar foto de producto no entregado (legacy)
 function tomarFotoNoEntregado(index, pedidoId) {
-  fotoEstado = 'noEntregado';
-  fotoPedidoIndex = index;
-  fotoPedidoId = pedidoId;
-  const input = document.getElementById(`fotoInput_${pedidoId}`);
-  if (input) {
-    input.click();
-  }
+  abrirWhatsAppFotoNoEntregado(pedidoId);
 }
 
 // Procesar foto y enviar por WhatsApp
@@ -984,123 +1083,109 @@ function abrirWhatsAppConMensaje(numero, mensaje) {
   }, 500);
 }
 
-// Función para enrutar hacia el pedido
-function enrutarPedido(index, pedidoId) {
+// Obtener ubicación del pedido (coordenadas o dirección)
+function getUbicacionPedido(index, pedidoId) {
   const pedido = pedidos[index];
-  if (!pedido) return;
-  
-  // Obtener coordenadas del pedido
-  let lat = null;
-  let lng = null;
-  
-  // Buscar coordenadas en el marcador del mapa
+  if (!pedido) return null;
+  let lat = null, lng = null;
   const marcadorPedido = marcadores.find(m => m.pedidoId === pedidoId);
   if (marcadorPedido && marcadorPedido.marker) {
-    const posicion = marcadorPedido.marker.getLatLng();
-    lat = posicion.lat;
-    lng = posicion.lng;
+    const pos = marcadorPedido.marker.getLatLng();
+    lat = pos.lat;
+    lng = pos.lng;
   }
-  
-  // Si no hay coordenadas del marcador pero hay URL de mapa, extraerlas
-  if (!lat || !lng) {
-    if (pedido.mapUrl) {
-      const match = pedido.mapUrl.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
-      if (match) {
-        lat = parseFloat(match[1]);
-        lng = parseFloat(match[2]);
-      }
+  if ((!lat || !lng) && pedido.mapUrl) {
+    const match = pedido.mapUrl.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+    if (match) {
+      lat = parseFloat(match[1]);
+      lng = parseFloat(match[2]);
     }
   }
-  
-  // Si tenemos coordenadas, ofrecer opciones de navegación
-  if (lat && lng) {
-    // Detectar si es móvil
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
-    const isAndroid = /Android/.test(navigator.userAgent);
-    
-    // Crear diálogo para elegir entre Maps y Waze
-    const usarMaps = confirm('¿Usar Google Maps?\n\nOK = Google Maps\nCancelar = Waze');
-    
-    if (usarMaps) {
-      // Google Maps
-      if (isIOS) {
-        // iOS - intentar abrir app, fallback a web
-        const mapsApp = `maps://maps.google.com/maps?daddr=${lat},${lng}&directionsmode=driving`;
-        const mapsWeb = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
-        
-        // Intentar abrir app
-        window.location.href = mapsApp;
-        
-        // Fallback después de un tiempo
-        setTimeout(() => {
-          window.open(mapsWeb, '_blank');
-        }, 1000);
-      } else if (isAndroid) {
-        // Android - usar intent de Android
-        const mapsApp = `google.navigation:q=${lat},${lng}`;
-        const mapsWeb = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
-        
-        // Intentar abrir app
-        window.location.href = mapsApp;
-        
-        // Fallback después de un tiempo
-        setTimeout(() => {
-          window.open(mapsWeb, '_blank');
-        }, 1000);
-      } else {
-        // Desktop - usar web
-        window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`, '_blank');
-      }
+  if (lat != null && lng != null) return { lat, lng };
+  if (pedido.direccion) return { direccion: pedido.direccion };
+  return null;
+}
+
+// Abrir solo Google Maps
+function enrutarConMaps(index, pedidoId) {
+  const u = getUbicacionPedido(index, pedidoId);
+  if (!u) {
+    alert('No hay ubicación disponible para este pedido. Agrega una URL de Google Maps.');
+    return;
+  }
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const isAndroid = /Android/.test(navigator.userAgent);
+  if (u.lat != null && u.lng != null) {
+    if (isIOS) {
+      window.location.href = `maps://maps.google.com/maps?daddr=${u.lat},${u.lng}&directionsmode=driving`;
+      setTimeout(() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${u.lat},${u.lng}&travelmode=driving`, '_blank'), 1000);
+    } else if (isAndroid) {
+      window.location.href = `google.navigation:q=${u.lat},${u.lng}`;
+      setTimeout(() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${u.lat},${u.lng}&travelmode=driving`, '_blank'), 1000);
     } else {
-      // Waze
-      if (isMobile) {
-        // Intentar abrir app de Waze
-        window.location.href = `waze://?ll=${lat},${lng}&navigate=yes`;
-        
-        // Fallback a web
-        setTimeout(() => {
-          window.open(`https://waze.com/ul?ll=${lat},${lng}&navigate=yes`, '_blank');
-        }, 1000);
-      } else {
-        window.open(`https://waze.com/ul?ll=${lat},${lng}&navigate=yes`, '_blank');
-      }
-    }
-  } else if (pedido.direccion) {
-    // Si no hay coordenadas pero hay dirección, usar la dirección
-    const direccionEncoded = encodeURIComponent(pedido.direccion);
-    const usarMaps = confirm('¿Usar Google Maps?\n\nOK = Google Maps\nCancelar = Waze');
-    
-    if (usarMaps) {
-      window.open(`https://www.google.com/maps/dir/?api=1&destination=${direccionEncoded}&travelmode=driving`, '_blank');
-    } else {
-      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-      if (isMobile) {
-        window.location.href = `waze://?q=${direccionEncoded}&navigate=yes`;
-        setTimeout(() => {
-          window.open(`https://waze.com/ul?q=${direccionEncoded}&navigate=yes`, '_blank');
-        }, 1000);
-      } else {
-        window.open(`https://waze.com/ul?q=${direccionEncoded}&navigate=yes`, '_blank');
-      }
+      window.open(`https://www.google.com/maps/dir/?api=1&destination=${u.lat},${u.lng}&travelmode=driving`, '_blank');
     }
   } else {
+    const dest = encodeURIComponent(u.direccion);
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${dest}&travelmode=driving`, '_blank');
+  }
+}
+
+// Abrir solo Waze
+function enrutarConWaze(index, pedidoId) {
+  const u = getUbicacionPedido(index, pedidoId);
+  if (!u) {
     alert('No hay ubicación disponible para este pedido. Agrega una URL de Google Maps.');
+    return;
+  }
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  if (u.lat != null && u.lng != null) {
+    if (isMobile) {
+      window.location.href = `waze://?ll=${u.lat},${u.lng}&navigate=yes`;
+      setTimeout(() => window.open(`https://waze.com/ul?ll=${u.lat},${u.lng}&navigate=yes`, '_blank'), 1000);
+    } else {
+      window.open(`https://waze.com/ul?ll=${u.lat},${u.lng}&navigate=yes`, '_blank');
+    }
+  } else {
+    const q = encodeURIComponent(u.direccion);
+    if (isMobile) {
+      window.location.href = `waze://?q=${q}&navigate=yes`;
+      setTimeout(() => window.open(`https://waze.com/ul?q=${q}&navigate=yes`, '_blank'), 1000);
+    } else {
+      window.open(`https://waze.com/ul?q=${q}&navigate=yes`, '_blank');
+    }
   }
 }
 
 // Función para notificar al cliente que el repartidor va en camino
-function notificarEnCamino(index, pedidoId, telefonoCliente) {
+function notificarEnCamino(index, pedidoId) {
+  const pedido = pedidos[index];
+  if (!pedido) return;
+  const telefonoCliente = pedido.telefono ? String(pedido.telefono).replace(/\D/g, '') : '';
   if (!telefonoCliente) {
     alert('No hay número de teléfono del cliente disponible');
     return;
   }
   
-  const pedido = pedidos[index];
-  const numeroLimpio = telefonoCliente.toString().replace(/\D/g, '');
-  const numeroWhatsApp = numeroLimpio.startsWith('57') ? numeroLimpio : `57${numeroLimpio}`;
+  const nombre = pedido.nombre || 'cliente';
+  const precio = parseInt(pedido.valor || 0, 10).toLocaleString('es-CO');
+  const numeroWhatsApp = telefonoCliente.startsWith('57') ? telefonoCliente : `57${telefonoCliente}`;
   
-  const mensaje = `Hola! 👋\n\nTe informamos que nuestro repartidor se encuentra en camino hacia tu ubicación para entregar el pedido #${pedidoId}.\n\n📋 Por favor ten en cuenta:\n• Estar pendiente con el dinero en mano\n• El repartidor NO cuenta con cambio\n• El tiempo de espera desde la llegada al punto de entrega es de 10 minutos\n\n💳 Si deseas pagar por Nequi o Daviplata, el número es: 3143645061\n\n¡Gracias por tu compra! 🚚`;
+  const mensaje = `Hola ${nombre}
+
+Te informamos que nuestro repartidor de Valero Store se encuentra en camino hacia tu ubicación para entregar el pedido.
+
+Por favor ten en cuenta:
+- Estar pendiente con los $${precio} en mano
+- El repartidor NO CUENTA CON CAMBIO
+- El tiempo de espera desde la llegada al punto de entrega es de 10 minutos
+
+Si deseas pagar por Nequi o Daviplata, el número es: 3143645061
+Aparecerá como Mic**** Por*******
+O si gustas puedes pagar por Bre-B con la llave: @NEQUIMIC7057
+
+Gracias por tu compra ${nombre}`;
   
   const url = `https://wa.me/${numeroWhatsApp}?text=${encodeURIComponent(mensaje)}`;
   window.open(url, '_blank');
@@ -1502,11 +1587,10 @@ function aplicarImportacion() {
     // Importar pedidos
     pedidos = datos.pedidos;
     
-    // Asegurar que todos tengan mapUrl
+    // Asegurar que todos tengan mapUrl y entregado
     pedidos = pedidos.map(pedido => {
-      if (!pedido.hasOwnProperty('mapUrl')) {
-        pedido.mapUrl = '';
-      }
+      if (!pedido.hasOwnProperty('mapUrl')) pedido.mapUrl = '';
+      if (!pedido.hasOwnProperty('entregado')) pedido.entregado = false;
       return pedido;
     });
     
@@ -1599,9 +1683,8 @@ function verificarDatosEnURL() {
 window.onload = function() {
   // Cargar pedidos guardados y asegurar que tengan el campo mapUrl
   pedidos = pedidos.map(pedido => {
-    if (!pedido.hasOwnProperty('mapUrl')) {
-      pedido.mapUrl = '';
-    }
+    if (!pedido.hasOwnProperty('mapUrl')) pedido.mapUrl = '';
+    if (!pedido.hasOwnProperty('entregado')) pedido.entregado = false;
     return pedido;
   });
   guardarPedidos();
