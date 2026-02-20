@@ -14,80 +14,245 @@ function initMap() {
   actualizarMarcadores();
 }
 
-function procesarPedido() {
+function limpiarTimestampsChat(texto) {
+  return texto.replace(/\[\d{1,2}:\d{2}[^\]]{0,30}\]\s*[^:\n]+:\s*/g, '');
+}
+
+function generarPedidoId(numeroPedido) {
+  if (numeroPedido && !pedidos.some(p => p.id === numeroPedido)) {
+    return numeroPedido;
+  }
+  return Math.max(...pedidos.map(p => p.id), 0) + 1;
+}
+
+function extraerCamposPedido(bloque) {
+  const dirMatch = bloque.match(/📍[^\n]*:\s*([\s\S]*?)(?=🙋|$)/);
+  const direccion = dirMatch ? dirMatch[1].trim().replace(/\n\s*/g, ' ').trim() : '';
+
+  const nomMatch = bloque.match(/🙋[^\n]*Nombre[^\n]*:\s*([\s\S]*?)(?=📲|$)/);
+  const nombre = nomMatch ? nomMatch[1].trim().split('\n')[0].trim() : '';
+
+  const telMatch = bloque.match(/📲[^\n]*:\s*([\s\S]*?)(?=💰|$)/);
+  const telRaw = telMatch ? telMatch[1].trim().split('\n')[0].trim() : '';
+  const primerTel = telRaw.match(/[\d\s]+/);
+  const telefono = primerTel ? primerTel[0].replace(/\s/g, '') : '';
+
+  const valMatch = bloque.match(/💰[^\n]*:\s*([\s\S]*?)(?=Envío|$)/);
+  let valor = valMatch ? valMatch[1].trim().split('\n')[0].trim() : '0';
+  valor = valor.replace(/[^\d]/g, '');
+  if (!valor) valor = '0';
+
+  const prodMatch = bloque.match(/Producto\s*🎁[^\n]*:\s*([\s\S]*?)(?=¿Todo en orden|$)/);
+  const productos = prodMatch
+    ? prodMatch[1].trim().split('\n').map(l => l.trim()).filter(l => l)
+    : [];
+
+  return { direccion, nombre, telefono, valor, productos };
+}
+
+async function resolverUrlCorta(url) {
+  const proxies = [
+    `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+  ];
+  for (const proxyUrl of proxies) {
+    try {
+      const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(10000) });
+      const html = await resp.text();
+      const coords = extraerCoordenadas(html);
+      if (coords) return coords;
+      const urlsEnHtml = html.match(/https?:\/\/(?:www\.)?google\.com\/maps[^\s"'<>]+/g) || [];
+      for (const u of urlsEnHtml) {
+        let decoded;
+        try { decoded = decodeURIComponent(u); } catch (e) { decoded = u; }
+        const c = extraerCoordenadas(decoded);
+        if (c) return c;
+      }
+    } catch (e) { continue; }
+  }
+  return null;
+}
+
+async function geocodificarParaCoordenadas(direccion) {
+  const consultas = [
+    direccion + ', Bogotá, Colombia',
+    direccion + ', Bogotá',
+    direccion,
+  ];
+  for (const q of consultas) {
+    try {
+      const resp = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`,
+        { headers: { 'User-Agent': 'DeliveryApp/1.0' }, signal: AbortSignal.timeout(8000) }
+      );
+      const data = await resp.json();
+      if (data && data.length > 0) {
+        return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+      }
+    } catch (e) { continue; }
+  }
+  return null;
+}
+
+async function obtenerCoordenadas(url, direccion) {
+  const coords = extraerCoordenadas(url);
+  if (coords) return coords;
+  if (/goo\.gl|maps\.app/i.test(url)) {
+    const resuelto = await resolverUrlCorta(url);
+    if (resuelto) return resuelto;
+  }
+  if (direccion) {
+    return await geocodificarParaCoordenadas(direccion);
+  }
+  return null;
+}
+
+async function procesarPedido() {
   const texto = document.getElementById("textoPedido").value.trim();
   if (!texto) {
     alert("Por favor, pega el formato del pedido");
     return;
   }
 
-  const numeroMatch = texto.match(/^(\d+):/);
-  const numeroPedido = numeroMatch ? parseInt(numeroMatch[1]) : null;
-
-  const direccionMatch = texto.match(/📍\s*Dirección completa[^\n]*:\s*([^\n]+(?:\n[^\n]+)*?)(?=\n|$)/);
-  const direccion = direccionMatch ? direccionMatch[1].trim().replace(/\n/g, ' ') : '';
-
-  const nombreMatch = texto.match(/🙋🏻\s*Nombre[^\n]*:\s*([^\n]+)/);
-  const nombre = nombreMatch ? nombreMatch[1].trim() : '';
-
-  const telefonoMatch = texto.match(/📲\s*Número de celular[^\n]*:\s*([^\n]+)/);
-  const telefono = telefonoMatch ? telefonoMatch[1].trim().replace(/\D/g, '') : '';
-
-  const valorMatch = texto.match(/💰\s*Valor a pagar[^\n]*:\s*([^\n]+)/);
-  let valor = valorMatch ? valorMatch[1].trim() : '0';
-  valor = valor.replace(/[^\d]/g, '');
-  if (!valor || valor === '') valor = '0';
-
-  const productoMatch = texto.match(/Producto\s*🎁[^\n]*:\s*([^\n]+(?:\n[^\n]+)*?)(?=\n|$)/);
-  const productos = productoMatch ? productoMatch[1].trim().split('\n').filter(p => p.trim()) : [];
-
-  const mapUrl = document.getElementById("mapUrlPedido").value.trim();
-  if (!mapUrl) {
-    alert("Debes ingresar la URL de Google Maps del pedido para poder cargarlo.");
+  if ((texto.match(/Para agilizar tu pedido/g) || []).length > 1) {
+    await procesarMultiplesPedidos(texto);
     return;
   }
 
-  let pedidoId;
-  if (numeroPedido) {
-    if (pedidos.some(p => p.id === numeroPedido)) {
-      pedidoId = Math.max(...pedidos.map(p => p.id), 0) + 1;
-    } else {
-      pedidoId = numeroPedido;
-    }
-  } else {
-    pedidoId = Math.max(...pedidos.map(p => p.id), 0) + 1;
+  const textoLimpio = limpiarTimestampsChat(texto);
+
+  const numeroMatch = textoLimpio.match(/(\d+):\s*\n?\s*Para agilizar/) || textoLimpio.match(/^(\d+):/m);
+  const numeroPedido = numeroMatch ? parseInt(numeroMatch[1]) : null;
+
+  const campos = extraerCamposPedido(textoLimpio);
+
+  const urlEnTexto = texto.match(/https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl)[^\s\n]*/i);
+  const mapUrl = urlEnTexto ? urlEnTexto[0] : '';
+
+  if (!mapUrl) {
+    alert("No se encontró URL de Google Maps en el texto pegado.\n\nAsegúrate de incluir el enlace de Maps junto con el formato del pedido.");
+    return;
   }
 
-  const nuevoPedido = {
-    id: pedidoId,
-    nombre,
-    telefono,
-    direccion,
-    productos,
-    valor,
-    textoOriginal: texto,
-    mapUrl,
-    entregado: false
-  };
+  const btnProcesar = document.querySelector('.btn-primary');
+  const textoOriginalBtn = btnProcesar ? btnProcesar.textContent : '';
+  if (btnProcesar) { btnProcesar.textContent = '⏳ Procesando...'; btnProcesar.disabled = true; }
 
-  pedidos.push(nuevoPedido);
+  const coords = await obtenerCoordenadas(mapUrl, campos.direccion);
+
+  if (btnProcesar) { btnProcesar.textContent = textoOriginalBtn; btnProcesar.disabled = false; }
+
+  if (!coords) {
+    alert("No se pudieron extraer coordenadas de la URL ni de la dirección.\n\nVerifica que el enlace de Maps o la dirección sean válidos.");
+    return;
+  }
+
+  const pedidoId = generarPedidoId(numeroPedido);
+  const mapUrlFinal = coords.lat && coords.lng
+    ? `https://www.google.com/maps?q=${coords.lat},${coords.lng}`
+    : mapUrl;
+
+  pedidos.push({
+    id: pedidoId,
+    nombre: campos.nombre,
+    telefono: campos.telefono,
+    direccion: campos.direccion,
+    productos: campos.productos,
+    valor: campos.valor,
+    textoOriginal: texto,
+    mapUrl: mapUrlFinal,
+    entregado: false,
+    noEntregado: false,
+    envioRecogido: false
+  });
+
   guardarPedidos();
   renderPedidos();
 
   setTimeout(() => {
-    if (!mapa) {
-      alert('El mapa no está listo. Por favor, espera un momento e intenta nuevamente.');
-      return;
-    }
-    procesarURLMapaPedido(mapUrl, pedidoId, productos, () => {
+    if (!mapa) return;
+    procesarURLMapaPedido(mapUrl, pedidoId, campos.productos, () => {
       ajustarVistaMapa();
       dibujarRutaEntreMarcadores();
     });
   }, 500);
 
   document.getElementById("textoPedido").value = "";
-  document.getElementById("mapUrlPedido").value = "";
   alert(`Pedido #${pedidoId} agregado exitosamente`);
+}
+
+async function procesarMultiplesPedidos(texto) {
+  const textoLimpio = limpiarTimestampsChat(texto);
+  const bloques = textoLimpio.split(/¿Todo en orden\?\s*😊?\s*/);
+  const urlRegex = /https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl)[^\s\n]*/i;
+
+  let agregados = 0;
+  let errores = [];
+
+  const btnProcesar = document.querySelector('.btn-primary');
+  const textoOriginalBtn = btnProcesar ? btnProcesar.textContent : '';
+
+  for (const bloque of bloques) {
+    if (!bloque.includes('📍')) continue;
+
+    const urlMatch = bloque.match(urlRegex);
+    const mapUrl = urlMatch ? urlMatch[0].trim() : '';
+    const numMatch = bloque.match(/(\d+):\s*\n/);
+    const numLabel = numMatch ? '#' + numMatch[1] : '?';
+
+    if (!mapUrl) {
+      errores.push(`Pedido ${numLabel}: No se encontró URL de Maps`);
+      continue;
+    }
+
+    const numeroPedido = numMatch ? parseInt(numMatch[1]) : null;
+    const campos = extraerCamposPedido(bloque);
+
+    if (btnProcesar) { btnProcesar.textContent = `⏳ Procesando pedido ${numLabel}...`; btnProcesar.disabled = true; }
+
+    const coords = await obtenerCoordenadas(mapUrl, campos.direccion);
+    if (!coords) {
+      errores.push(`Pedido ${numLabel}: No se pudieron extraer coordenadas`);
+      continue;
+    }
+
+    const pedidoId = generarPedidoId(numeroPedido);
+    const mapUrlFinal = coords.lat && coords.lng
+      ? `https://www.google.com/maps?q=${coords.lat},${coords.lng}`
+      : mapUrl;
+
+    pedidos.push({
+      id: pedidoId,
+      nombre: campos.nombre,
+      telefono: campos.telefono,
+      direccion: campos.direccion,
+      productos: campos.productos,
+      valor: campos.valor,
+      textoOriginal: bloque.trim(),
+      mapUrl: mapUrlFinal,
+      entregado: false,
+      noEntregado: false,
+      envioRecogido: false
+    });
+
+    agregados++;
+  }
+
+  if (btnProcesar) { btnProcesar.textContent = textoOriginalBtn; btnProcesar.disabled = false; }
+
+  if (agregados > 0) {
+    guardarPedidos();
+    renderPedidos();
+    setTimeout(() => actualizarMarcadores(), 500);
+    document.getElementById("textoPedido").value = "";
+  }
+
+  let msg = `✅ Se agregaron ${agregados} pedido(s)`;
+  if (errores.length > 0) {
+    msg += `\n\n⚠️ ${errores.length} pedido(s) no agregado(s):\n${errores.join('\n')}`;
+  }
+  alert(msg);
 }
 
 function guardarPedidos() {
@@ -544,17 +709,29 @@ function dibujarRutaEntreMarcadores() {
 }
 
 function extraerCoordenadas(url) {
+  let decoded;
+  try { decoded = decodeURIComponent(url); } catch (e) { decoded = url; }
+
   const patrones = [
-    /@(-?\d+\.?\d*),(-?\d+\.?\d*)/,
-    /place\/[^@]+@(-?\d+\.?\d*),(-?\d+\.?\d*)/,
-    /[?&]q=(-?\d+\.?\d*),(-?\d+\.?\d*)/,
-    /query=(-?\d+\.?\d*),(-?\d+\.?\d*)/,
-    /[?&]ll=(-?\d+\.?\d*),(-?\d+\.?\d*)/,
-    /(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)/
+    /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,
+    /@(-?\d+\.\d+),(-?\d+\.\d+)/,
+    /[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/,
+    /query=(-?\d+\.\d+),(-?\d+\.\d+)/,
+    /[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)/,
+    /place\/[^@]*@(-?\d+\.\d+),(-?\d+\.\d+)/,
   ];
-  for (const p of patrones) {
-    const m = url.match(p);
-    if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]) };
+
+  for (const texto of [decoded, url]) {
+    for (const p of patrones) {
+      const m = texto.match(p);
+      if (m) {
+        const lat = parseFloat(m[1]);
+        const lng = parseFloat(m[2]);
+        if (!isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+          return { lat, lng };
+        }
+      }
+    }
   }
   return null;
 }
