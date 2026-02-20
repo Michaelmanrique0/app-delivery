@@ -50,6 +50,12 @@ function extraerCamposPedido(bloque) {
   return { direccion, nombre, telefono, valor, productos };
 }
 
+function fetchConTimeout(url, opciones, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return fetch(url, { ...opciones, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 async function resolverUrlCorta(url) {
   const proxies = [
     `https://corsproxy.io/?${encodeURIComponent(url)}`,
@@ -58,11 +64,11 @@ async function resolverUrlCorta(url) {
   ];
   for (const proxyUrl of proxies) {
     try {
-      const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(10000) });
+      const resp = await fetchConTimeout(proxyUrl, {}, 12000);
       const html = await resp.text();
       const coords = extraerCoordenadas(html);
       if (coords) return coords;
-      const urlsEnHtml = html.match(/https?:\/\/(?:www\.)?google\.com\/maps[^\s"'<>]+/g) || [];
+      const urlsEnHtml = html.match(/https?:\/\/(?:www\.)?google\.[a-z.]+\/maps[^\s"'<>]+/g) || [];
       for (const u of urlsEnHtml) {
         let decoded;
         try { decoded = decodeURIComponent(u); } catch (e) { decoded = u; }
@@ -75,16 +81,18 @@ async function resolverUrlCorta(url) {
 }
 
 async function geocodificarParaCoordenadas(direccion) {
+  const limpia = direccion.replace(/#/g, ' ').replace(/\s+/g, ' ').trim();
   const consultas = [
-    direccion + ', Bogotá, Colombia',
-    direccion + ', Bogotá',
-    direccion,
+    limpia + ', Bogotá, Colombia',
+    limpia + ', Bogotá',
+    limpia,
   ];
   for (const q of consultas) {
     try {
-      const resp = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`,
-        { headers: { 'User-Agent': 'DeliveryApp/1.0' }, signal: AbortSignal.timeout(8000) }
+      const resp = await fetchConTimeout(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1&countrycodes=co`,
+        { headers: { 'User-Agent': 'DeliveryApp/1.0' } },
+        10000
       );
       const data = await resp.json();
       if (data && data.length > 0) {
@@ -846,12 +854,26 @@ function mostrarQR(codificado) {
   qrContainer.style.display = 'block';
   qrEl.innerHTML = '';
 
+  const urlCompartir = window.location.origin + window.location.pathname + '?data=' + encodeURIComponent(codificado);
+  const textoQR = urlCompartir.length <= 2500 ? urlCompartir : codificado;
+
+  if (textoQR.length > 2500) {
+    qrEl.innerHTML = `
+      <p style="color:#E65100;padding:15px;background:#FFF3E0;border-radius:8px;font-size:14px;">
+        ⚠️ Los datos son demasiado grandes para un código QR (${pedidos.length} pedidos).<br><br>
+        <strong>Usa estas alternativas:</strong><br>
+        1. Copia el código de texto de arriba y pégalo en el otro dispositivo<br>
+        2. Comparte el enlace directamente
+      </p>`;
+    return;
+  }
+
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   const qrSize = isMobile ? 250 : 300;
 
   try {
     new QRCode(qrEl, {
-      text: codificado,
+      text: textoQR,
       width: qrSize,
       height: qrSize,
       colorDark: '#000000',
@@ -859,7 +881,11 @@ function mostrarQR(codificado) {
       correctLevel: QRCode.CorrectLevel.L
     });
   } catch (error) {
-    qrEl.innerHTML = '<p style="color:red;padding:20px;">Error al generar código QR. Usa el código de texto en su lugar.</p>';
+    qrEl.innerHTML = `
+      <p style="color:#E65100;padding:15px;background:#FFF3E0;border-radius:8px;font-size:14px;">
+        ⚠️ No se pudo generar el QR. Los datos pueden ser demasiado grandes.<br><br>
+        <strong>Alternativa:</strong> Copia el código de texto de arriba y pégalo en el otro dispositivo.
+      </p>`;
   }
 }
 
