@@ -178,14 +178,35 @@ button {
   border-top: 2px solid #9e9e9e;
 }
 
-.total-recogido {
-  background: #E8F5E9;
-  padding: 12px 20px;
-  border-radius: 8px;
-  font-size: 18px;
-  font-weight: bold;
-  color: #2E7D32;
+.totales-resumen {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 15px;
+}
+
+.total-item {
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: bold;
+}
+
+.total-recogido-dia {
+  background: #E3F2FD;
+  color: #1565C0;
+  border: 2px solid #2196F3;
+}
+
+.total-pago-domiciliario {
+  background: #FFF3E0;
+  color: #E65100;
+  border: 2px solid #FF9800;
+}
+
+.total-entregar-tienda {
+  background: #E8F5E9;
+  color: #2E7D32;
   border: 2px solid #4CAF50;
 }
 
@@ -194,6 +215,24 @@ button {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 15px;
+}
+
+.pedido-header-btns {
+  display: flex;
+  gap: 5px;
+}
+
+.btn-edit {
+  background: #FF9800;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.btn-edit:hover {
+  background: #F57C00;
 }
 
 .pedido-numero {
@@ -408,7 +447,13 @@ button {
   border-radius: 8px;
 }
 
-.qr-container canvas {
+#qrCode {
+  display: flex;
+  justify-content: center;
+}
+
+#qrCode img,
+#qrCode canvas {
   max-width: 100%;
   height: auto;
 }
@@ -561,7 +606,8 @@ button {
     min-height: 80px;
   }
   
-  .qr-container canvas {
+  #qrCode img,
+  #qrCode canvas {
     max-width: 250px;
   }
   

@@ -122,10 +122,17 @@ function renderPedidos() {
       ? `<div class="pedido-no-entregado-wrap"><button class="btn-warning" onclick="marcarNoEntregado(${index})" style="width: 100%;">↩️ No entregado</button></div>`
       : '';
 
+    const estadoTexto = pedido.entregado
+      ? (pedido.noEntregado ? ' ✕ No entregado' : ' ✓ Entregado')
+      : '';
+
     div.innerHTML = `
       <div class="pedido-header">
-        <div class="pedido-numero">Pedido #${pedido.id}${pedido.entregado ? ' ✓ Entregado' : ''}</div>
-        <button class="btn-danger" onclick="eliminarPedido(${index})" style="padding: 5px 10px; font-size: 12px;">✕ Eliminar</button>
+        <div class="pedido-numero">Pedido #${pedido.id}${estadoTexto}</div>
+        <div class="pedido-header-btns">
+          <button class="btn-edit" onclick="editarPedido(${index})" style="padding: 5px 10px; font-size: 12px;">✏️ Editar</button>
+          <button class="btn-danger" onclick="eliminarPedido(${index})" style="padding: 5px 10px; font-size: 12px;">✕ Eliminar</button>
+        </div>
       </div>
       <div class="pedido-info">
         <strong>👤 Nombre:</strong> ${pedido.nombre || 'No especificado'}<br>
@@ -133,6 +140,7 @@ function renderPedidos() {
         <strong>📍 Dirección:</strong> ${pedido.direccion || 'No especificada'}<br>
         <strong>🎁 Productos:</strong> ${pedido.productos && pedido.productos.length > 0 ? pedido.productos.join(', ') : 'No especificado'}<br>
         <strong>💰 Valor:</strong> $${valorFormato}<br>
+        <strong>🔗 URL Maps:</strong> <span style="font-size:12px;word-break:break-all;">${pedido.mapUrl ? pedido.mapUrl.substring(0, 50) + '...' : 'No especificada'}</span><br>
       </div>
       <div class="pedido-buttons">
         <button class="btn-success" onclick="whatsappLlamar('${telefonoLimpio}')">📞 WhatsApp Llamar</button>
@@ -160,12 +168,18 @@ function renderPedidos() {
     lista.appendChild(div);
   });
 
-  const totalRecogido = pedidos.filter(p => p.entregado && !p.noEntregado).reduce((sum, p) => sum + parseInt(p.valor || 0, 10), 0);
-  const elTotal = document.getElementById('totalRecogido');
-  const elValor = document.getElementById('totalRecogidoValor');
-  if (elTotal && elValor) {
-    elValor.textContent = totalRecogido.toLocaleString('es-CO');
-    elTotal.style.display = totalRecogido > 0 ? 'block' : 'none';
+  const recogidoDelDia = pedidos.filter(p => p.entregado && !p.noEntregado).reduce((sum, p) => sum + parseInt(p.valor || 0, 10), 0);
+  const enviosEntregados = pedidos.filter(p => p.entregado && !p.noEntregado).length;
+  const enviosNoEntregadosEnPunto = pedidos.filter(p => p.noEntregado && p.envioRecogido).length;
+  const pagoDomiciliario = (enviosEntregados + enviosNoEntregadosEnPunto) * 12000;
+  const entregarTienda = recogidoDelDia - pagoDomiciliario;
+
+  const elResumen = document.getElementById('totalesResumen');
+  if (elResumen) {
+    document.getElementById('totalRecogidoDia').textContent = recogidoDelDia.toLocaleString('es-CO');
+    document.getElementById('totalPagoDomiciliario').textContent = pagoDomiciliario.toLocaleString('es-CO');
+    document.getElementById('totalEntregarTienda').textContent = entregarTienda.toLocaleString('es-CO');
+    elResumen.style.display = (recogidoDelDia > 0 || pagoDomiciliario > 0) ? 'flex' : 'none';
   }
 }
 
@@ -230,6 +244,7 @@ function marcarNoEntregado(index) {
   if (!pedido) return;
   pedido.entregado = false;
   pedido.noEntregado = false;
+  pedido.envioRecogido = false;
   pedidos.splice(index, 1);
   pedidos.unshift(pedido);
   guardarPedidos();
@@ -244,6 +259,33 @@ function eliminarTodos() {
     renderPedidos();
     actualizarMarcadores();
   }
+}
+
+// --- Editar pedido ---
+
+function editarPedido(index) {
+  const pedido = pedidos[index];
+  if (!pedido) return;
+
+  const valorActual = parseInt(pedido.valor || 0).toLocaleString('es-CO');
+  const nuevoValor = prompt(`Valor actual: $${valorActual}\n\nIngresa el nuevo valor (solo números):`, pedido.valor || '0');
+
+  if (nuevoValor !== null) {
+    const valorLimpio = nuevoValor.replace(/[^\d]/g, '');
+    if (valorLimpio !== '') {
+      pedido.valor = valorLimpio;
+    }
+  }
+
+  const nuevaUrl = prompt(`URL Maps actual:\n${pedido.mapUrl || '(vacía)'}\n\nIngresa la nueva URL de Google Maps (dejar vacío para no cambiar):`, pedido.mapUrl || '');
+
+  if (nuevaUrl !== null && nuevaUrl.trim() !== pedido.mapUrl) {
+    pedido.mapUrl = nuevaUrl.trim();
+  }
+
+  guardarPedidos();
+  renderPedidos();
+  actualizarMarcadores();
 }
 
 // --- Comunicación ---
@@ -280,17 +322,23 @@ function fotoEntregado(index, pedidoId) {
   const pedido = pedidos[index];
   if (!pedido) return;
   pedido.noEntregado = false;
+  pedido.envioRecogido = false;
   marcarEntregado(index);
 }
 
 function fotoNoEntregado(index, pedidoId) {
+  const pedido = pedidos[index];
+  if (!pedido) return;
+
+  const enUbicacion = confirm('¿Te encuentras en la ubicación del pedido?\n\n✅ Aceptar = Sí, estoy en el punto (se cobra envío $12.000)\n❌ Cancelar = No fui al punto (no se cobra envío)');
+
   const numeroAdmin = '573143473582';
   const mensaje = `Pedido #${pedidoId} no entregado`;
   window.open(`https://wa.me/${numeroAdmin}?text=${encodeURIComponent(mensaje)}`, '_blank');
-  const pedido = pedidos[index];
-  if (!pedido) return;
+
   pedido.entregado = true;
   pedido.noEntregado = true;
+  pedido.envioRecogido = enUbicacion;
   pedidos.splice(index, 1);
   pedidos.push(pedido);
   guardarPedidos();
@@ -590,6 +638,8 @@ function aplicarImportacion() {
     pedidos = datos.pedidos.map(p => {
       if (!p.hasOwnProperty('mapUrl')) p.mapUrl = '';
       if (!p.hasOwnProperty('entregado')) p.entregado = false;
+      if (!p.hasOwnProperty('noEntregado')) p.noEntregado = false;
+      if (!p.hasOwnProperty('envioRecogido')) p.envioRecogido = false;
       return p;
     });
 
@@ -608,7 +658,7 @@ function aplicarImportacion() {
 
 function mostrarQR(codificado) {
   const qrContainer = document.getElementById('qrContainer');
-  const canvas = document.getElementById('qrCode');
+  const qrEl = document.getElementById('qrCode');
 
   if (!codificado) {
     if (pedidos.length === 0) { alert('No hay pedidos para generar QR'); return; }
@@ -617,21 +667,23 @@ function mostrarQR(codificado) {
   }
 
   qrContainer.style.display = 'block';
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  qrEl.innerHTML = '';
+
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   const qrSize = isMobile ? 250 : 300;
-  canvas.width = qrSize;
-  canvas.height = qrSize;
 
-  QRCode.toCanvas(canvas, codificado, {
-    width: qrSize, margin: 2,
-    color: { dark: '#000000', light: '#FFFFFF' }
-  }, function (error) {
-    if (error) {
-      qrContainer.innerHTML = '<p style="color:red;padding:20px;">Error al generar código QR. Usa el código de texto en su lugar.</p>';
-    }
-  });
+  try {
+    new QRCode(qrEl, {
+      text: codificado,
+      width: qrSize,
+      height: qrSize,
+      colorDark: '#000000',
+      colorLight: '#ffffff',
+      correctLevel: QRCode.CorrectLevel.L
+    });
+  } catch (error) {
+    qrEl.innerHTML = '<p style="color:red;padding:20px;">Error al generar código QR. Usa el código de texto en su lugar.</p>';
+  }
 }
 
 function verificarDatosEnURL() {
@@ -651,6 +703,8 @@ window.onload = function () {
   pedidos = pedidos.map(p => {
     if (!p.hasOwnProperty('mapUrl')) p.mapUrl = '';
     if (!p.hasOwnProperty('entregado')) p.entregado = false;
+    if (!p.hasOwnProperty('noEntregado')) p.noEntregado = false;
+    if (!p.hasOwnProperty('envioRecogido')) p.envioRecogido = false;
     return p;
   });
   guardarPedidos();

@@ -25,7 +25,7 @@
     </div>
     <div class="qr-container" id="qrContainer" style="display: none;">
       <h3>Escanea este código QR con tu celular:</h3>
-      <canvas id="qrCode"></canvas>
+      <div id="qrCode"></div>
       <div class="sync-info">
         <strong>Instrucciones:</strong><br>
         1. En el PC: Haz clic en "Exportar Datos"<br>
@@ -51,8 +51,16 @@
       <h2 style="margin: 0; border: none; padding: 0;">📦 Lista de Pedidos</h2>
       <button class="btn-danger" onclick="eliminarTodos()">🗑️ Eliminar Todos</button>
     </div>
-    <div class="total-recogido" id="totalRecogido" style="display: none;">
-      💵 Total recogido (entregados): $<span id="totalRecogidoValor">0</span>
+    <div class="totales-resumen" id="totalesResumen" style="display: none;">
+      <div class="total-item total-recogido-dia">
+        💵 Recogido del día: $<span id="totalRecogidoDia">0</span>
+      </div>
+      <div class="total-item total-pago-domiciliario">
+        🏍️ Pago domiciliario: $<span id="totalPagoDomiciliario">0</span>
+      </div>
+      <div class="total-item total-entregar-tienda">
+        🏪 A entregar a tienda: $<span id="totalEntregarTienda">0</span>
+      </div>
     </div>
     <div id="listaPedidos">
       <div class="empty-state" id="emptyState">
@@ -69,7 +77,7 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
