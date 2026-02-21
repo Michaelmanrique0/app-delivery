@@ -777,32 +777,83 @@ function procesarURLMapaPedido(url, pedidoId, productos, callback) {
 
 // --- Sincronización ---
 
-function exportarDatos() {
-  if (pedidos.length === 0) { alert('No hay pedidos para exportar'); return; }
-  const datosJSON = JSON.stringify({ pedidos, timestamp: new Date().toISOString(), version: '1.0' });
-  const codificado = btoa(unescape(encodeURIComponent(datosJSON)));
-  const urlCompartir = window.location.origin + window.location.pathname + '?data=' + encodeURIComponent(codificado);
+function compactarPedidos() {
+  return pedidos.map(p => [
+    p.id,
+    p.nombre || '',
+    p.telefono || '',
+    p.direccion || '',
+    p.valor || '0',
+    p.mapUrl || '',
+    (p.entregado ? 1 : 0) | (p.noEntregado ? 2 : 0) | (p.envioRecogido ? 4 : 0),
+    (p.productos || []).join('|')
+  ]);
+}
 
+function descompactarPedidos(arr) {
+  return arr.map(c => ({
+    id: c[0], nombre: c[1], telefono: c[2], direccion: c[3],
+    valor: c[4], mapUrl: c[5],
+    entregado: !!(c[6] & 1), noEntregado: !!(c[6] & 2), envioRecogido: !!(c[6] & 4),
+    productos: c[7] ? c[7].split('|') : [], textoOriginal: ''
+  }));
+}
+
+function uint8ToBase64(arr) {
+  let bin = '';
+  for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
+  return btoa(bin);
+}
+
+async function comprimirParaQR() {
+  const json = JSON.stringify(compactarPedidos());
+  if (typeof CompressionStream !== 'undefined') {
+    try {
+      const blob = new Blob([json]);
+      const stream = blob.stream().pipeThrough(new CompressionStream('deflate'));
+      const buf = await new Response(stream).arrayBuffer();
+      return 'CZ:' + uint8ToBase64(new Uint8Array(buf));
+    } catch (e) {}
+  }
+  return 'CC:' + btoa(unescape(encodeURIComponent(json)));
+}
+
+async function descomprimirDatos(str) {
+  if (str.startsWith('CZ:')) {
+    const bytes = Uint8Array.from(atob(str.slice(3)), c => c.charCodeAt(0));
+    const blob = new Blob([bytes]);
+    const stream = blob.stream().pipeThrough(new DecompressionStream('deflate'));
+    return await new Response(stream).text();
+  }
+  if (str.startsWith('CC:')) {
+    return decodeURIComponent(escape(atob(str.slice(3))));
+  }
+  return null;
+}
+
+async function exportarDatos() {
+  if (pedidos.length === 0) { alert('No hay pedidos para exportar'); return; }
+
+  const comprimido = await comprimirParaQR();
   const syncArea = document.getElementById('syncCodeArea');
   const syncData = document.getElementById('syncData');
   syncArea.style.display = 'block';
-  syncData.value = codificado;
+  syncData.value = comprimido;
   syncData.select();
 
-  mostrarQR(codificado);
+  await mostrarQR();
 
   const infoDiv = document.querySelector('.sync-info');
   if (infoDiv) {
     infoDiv.innerHTML = `
       <strong>Opciones de sincronización:</strong><br>
       1. Escanea el código QR con tu celular<br>
-      2. Copia el código de texto y pégalo en tu celular<br>
-      3. Comparte este enlace: <a href="${urlCompartir}" target="_blank" style="word-break:break-all;color:#2196F3;">${urlCompartir.substring(0, 50)}...</a><br><br>
+      2. Copia el código de texto y pégalo en el otro dispositivo<br><br>
       <strong>Total de pedidos:</strong> ${pedidos.length}`;
   }
 
   if (navigator.clipboard) {
-    navigator.clipboard.writeText(urlCompartir).catch(() => {});
+    navigator.clipboard.writeText(comprimido).catch(() => {});
   }
 }
 
@@ -811,16 +862,26 @@ function importarDatos() {
   document.getElementById('syncData').focus();
 }
 
-function aplicarImportacion() {
-  const codificado = document.getElementById('syncData').value.trim();
-  if (!codificado) { alert('Por favor, pega el código de sincronización'); return; }
+async function aplicarImportacion() {
+  const input = document.getElementById('syncData').value.trim();
+  if (!input) { alert('Por favor, pega el código de sincronización'); return; }
 
   try {
-    const datos = JSON.parse(decodeURIComponent(escape(atob(codificado))));
-    if (!datos.pedidos || !Array.isArray(datos.pedidos)) throw new Error('Formato de datos inválido');
-    if (!confirm(`¿Importar ${datos.pedidos.length} pedido(s)?\n\nEsto reemplazará todos los pedidos actuales.`)) return;
+    let listaPedidos;
 
-    pedidos = datos.pedidos.map(p => {
+    if (input.startsWith('CZ:') || input.startsWith('CC:')) {
+      const json = await descomprimirDatos(input);
+      listaPedidos = descompactarPedidos(JSON.parse(json));
+    } else {
+      const datos = JSON.parse(decodeURIComponent(escape(atob(input))));
+      if (!datos.pedidos || !Array.isArray(datos.pedidos)) throw new Error('Formato inválido');
+      listaPedidos = datos.pedidos;
+    }
+
+    if (!listaPedidos || listaPedidos.length === 0) throw new Error('No se encontraron pedidos');
+    if (!confirm(`¿Importar ${listaPedidos.length} pedido(s)?\n\nEsto reemplazará todos los pedidos actuales.`)) return;
+
+    pedidos = listaPedidos.map(p => {
       if (!p.hasOwnProperty('mapUrl')) p.mapUrl = '';
       if (!p.hasOwnProperty('entregado')) p.entregado = false;
       if (!p.hasOwnProperty('noEntregado')) p.noEntregado = false;
@@ -841,33 +902,27 @@ function aplicarImportacion() {
   }
 }
 
-function mostrarQR(codificado) {
+async function mostrarQR() {
   const qrContainer = document.getElementById('qrContainer');
   const qrEl = document.getElementById('qrCode');
 
-  if (!codificado) {
-    if (pedidos.length === 0) { alert('No hay pedidos para generar QR'); return; }
-    const datosJSON = JSON.stringify({ pedidos, timestamp: new Date().toISOString(), version: '1.0' });
-    codificado = btoa(unescape(encodeURIComponent(datosJSON)));
-  }
+  if (pedidos.length === 0) { alert('No hay pedidos para generar QR'); return; }
 
   qrContainer.style.display = 'block';
-  qrEl.innerHTML = '';
+  qrEl.innerHTML = '<p style="padding:20px;text-align:center;">⏳ Comprimiendo datos...</p>';
 
-  const urlCompartir = window.location.origin + window.location.pathname + '?data=' + encodeURIComponent(codificado);
-  const textoQR = urlCompartir.length <= 2500 ? urlCompartir : codificado;
+  const textoQR = await comprimirParaQR();
 
-  if (textoQR.length > 2500) {
+  if (textoQR.length > 2900) {
     qrEl.innerHTML = `
       <p style="color:#E65100;padding:15px;background:#FFF3E0;border-radius:8px;font-size:14px;">
-        ⚠️ Los datos son demasiado grandes para un código QR (${pedidos.length} pedidos).<br><br>
-        <strong>Usa estas alternativas:</strong><br>
-        1. Copia el código de texto de arriba y pégalo en el otro dispositivo<br>
-        2. Comparte el enlace directamente
+        ⚠️ Datos muy grandes para QR aún comprimidos (${textoQR.length} chars).<br><br>
+        <strong>Alternativa:</strong> Copia el código de texto de arriba y pégalo en el otro dispositivo.
       </p>`;
     return;
   }
 
+  qrEl.innerHTML = '';
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   const qrSize = isMobile ? 250 : 300;
 
@@ -883,7 +938,7 @@ function mostrarQR(codificado) {
   } catch (error) {
     qrEl.innerHTML = `
       <p style="color:#E65100;padding:15px;background:#FFF3E0;border-radius:8px;font-size:14px;">
-        ⚠️ No se pudo generar el QR. Los datos pueden ser demasiado grandes.<br><br>
+        ⚠️ No se pudo generar el QR.<br><br>
         <strong>Alternativa:</strong> Copia el código de texto de arriba y pégalo en el otro dispositivo.
       </p>`;
   }
