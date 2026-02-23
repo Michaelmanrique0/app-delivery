@@ -15,7 +15,9 @@ function initMap() {
 }
 
 function limpiarTimestampsChat(texto) {
-  return texto.replace(/\[\d{1,2}:\d{2}[^\]]{0,30}\]\s*[^:\n]+:\s*/g, '');
+  return texto
+    .replace(/\u200E|\u200F|\u200B|\u200C|\u200D|\uFEFF/g, '')
+    .replace(/\[\d{1,2}:\d{2}[^\]]{0,30}\]\s*[^:\n]+:\s*/g, '');
 }
 
 function generarPedidoId(numeroPedido) {
@@ -68,12 +70,22 @@ async function resolverUrlCorta(url) {
       const html = await resp.text();
       const coords = extraerCoordenadas(html);
       if (coords) return coords;
-      const urlsEnHtml = html.match(/https?:\/\/(?:www\.)?google\.[a-z.]+\/maps[^\s"'<>]+/g) || [];
+      const urlsEnHtml = html.match(/https?:\/\/(?:(?:www\.)?google\.[a-z.]+\/maps|maps\.apple\.com)[^\s"'<>]+/g) || [];
       for (const u of urlsEnHtml) {
         let decoded;
         try { decoded = decodeURIComponent(u); } catch (e) { decoded = u; }
         const c = extraerCoordenadas(decoded);
         if (c) return c;
+      }
+      const llMatch = html.match(/"latitude"\s*:\s*(-?\d+\.\d+).*?"longitude"\s*:\s*(-?\d+\.\d+)/s);
+      if (llMatch) {
+        const lat = parseFloat(llMatch[1]), lng = parseFloat(llMatch[2]);
+        if (!isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) return { lat, lng };
+      }
+      const centerMatch = html.match(/center=(-?\d+\.\d+),(-?\d+\.\d+)/);
+      if (centerMatch) {
+        const lat = parseFloat(centerMatch[1]), lng = parseFloat(centerMatch[2]);
+        if (!isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) return { lat, lng };
       }
     } catch (e) { continue; }
   }
@@ -106,7 +118,7 @@ async function geocodificarParaCoordenadas(direccion) {
 async function obtenerCoordenadas(url, direccion) {
   const coords = extraerCoordenadas(url);
   if (coords) return coords;
-  if (/goo\.gl|maps\.app/i.test(url)) {
+  if (/goo\.gl|maps\.app|maps\.apple/i.test(url)) {
     const resuelto = await resolverUrlCorta(url);
     if (resuelto) return resuelto;
   }
@@ -135,7 +147,7 @@ async function procesarPedido() {
 
   const campos = extraerCamposPedido(textoLimpio);
 
-  const urlEnTexto = texto.match(/https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl)[^\s\n]*/i);
+  const urlEnTexto = texto.match(/https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl|maps\.apple\.com|maps\.apple)[^\s\n]*/i);
   const mapUrl = urlEnTexto ? urlEnTexto[0] : '';
 
   if (!mapUrl) {
@@ -193,7 +205,7 @@ async function procesarPedido() {
 async function procesarMultiplesPedidos(texto) {
   const textoLimpio = limpiarTimestampsChat(texto);
   const bloques = textoLimpio.split(/¿Todo en orden\?\s*😊?\s*/);
-  const urlRegex = /https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl)[^\s\n]*/i;
+  const urlRegex = /https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl|maps\.apple\.com|maps\.apple)[^\s\n]*/i;
 
   let agregados = 0;
   let errores = [];
@@ -717,8 +729,9 @@ function dibujarRutaEntreMarcadores() {
 }
 
 function extraerCoordenadas(url) {
+  const limpia = url.replace(/\s+/g, '').replace(/%2C/gi, ',').replace(/%40/gi, '@');
   let decoded;
-  try { decoded = decodeURIComponent(url); } catch (e) { decoded = url; }
+  try { decoded = decodeURIComponent(limpia); } catch (e) { decoded = limpia; }
 
   const patrones = [
     /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,
@@ -727,9 +740,11 @@ function extraerCoordenadas(url) {
     /query=(-?\d+\.\d+),(-?\d+\.\d+)/,
     /[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)/,
     /place\/[^@]*@(-?\d+\.\d+),(-?\d+\.\d+)/,
+    /[?&]sll=(-?\d+\.\d+),(-?\d+\.\d+)/,
+    /center=(-?\d+\.\d+),(-?\d+\.\d+)/,
   ];
 
-  for (const texto of [decoded, url]) {
+  for (const texto of [decoded, limpia, url]) {
     for (const p of patrones) {
       const m = texto.match(p);
       if (m) {
