@@ -115,15 +115,22 @@ async function geocodificarParaCoordenadas(direccion) {
   return null;
 }
 
+function estaEnZonaOperacion(coords) {
+  if (!coords) return false;
+  // Bogota y alrededores operativos
+  return coords.lat >= 4.1 && coords.lat <= 5.2 && coords.lng >= -74.7 && coords.lng <= -73.5;
+}
+
 async function obtenerCoordenadas(url, direccion) {
   const coords = extraerCoordenadas(url);
-  if (coords) return coords;
+  if (coords && estaEnZonaOperacion(coords)) return coords;
   if (/goo\.gl|maps\.app|maps\.apple/i.test(url)) {
     const resuelto = await resolverUrlCorta(url);
-    if (resuelto) return resuelto;
+    if (resuelto && estaEnZonaOperacion(resuelto)) return resuelto;
   }
   if (direccion) {
-    return await geocodificarParaCoordenadas(direccion);
+    const geocod = await geocodificarParaCoordenadas(direccion);
+    if (geocod && estaEnZonaOperacion(geocod)) return geocod;
   }
   return null;
 }
@@ -192,7 +199,7 @@ async function procesarPedido() {
 
   setTimeout(() => {
     if (!mapa) return;
-    procesarURLMapaPedido(mapUrl, pedidoId, campos.productos, () => {
+    procesarURLMapaPedido(mapUrlFinal, pedidoId, campos.productos, () => {
       ajustarVistaMapa();
       dibujarRutaEntreMarcadores();
     });
