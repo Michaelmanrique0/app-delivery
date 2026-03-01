@@ -12,6 +12,18 @@ function initMap() {
     maxZoom: 19
   }).addTo(mapa);
   actualizarMarcadores();
+
+  // En móviles Leaflet puede calcular mal dimensiones iniciales dentro de layouts flex.
+  setTimeout(() => { if (mapa) mapa.invalidateSize(); }, 150);
+  setTimeout(() => { if (mapa) mapa.invalidateSize(); }, 500);
+  window.addEventListener('resize', () => {
+    if (!mapa) return;
+    setTimeout(() => mapa.invalidateSize(), 120);
+  });
+  window.addEventListener('orientationchange', () => {
+    if (!mapa) return;
+    setTimeout(() => mapa.invalidateSize(), 220);
+  });
 }
 
 function limpiarTimestampsChat(texto) {
@@ -722,8 +734,12 @@ function actualizarMarcadores() {
     const cb = () => {
       completados++;
       if (completados === total) {
-        ajustarVistaMapa();
-        dibujarRutaEntreMarcadores();
+        setTimeout(() => {
+          if (!mapa) return;
+          mapa.invalidateSize();
+          ajustarVistaMapa();
+          dibujarRutaEntreMarcadores();
+        }, 100);
       }
     };
 
@@ -910,17 +926,32 @@ function compactarPedidos() {
     p.valor || '0',
     p.mapUrl || '',
     (p.entregado ? 1 : 0) | (p.noEntregado ? 2 : 0) | (p.envioRecogido ? 4 : 0),
-    (p.productos || []).join('|')
+    (p.productos || []).join('|'),
+    (p.coords && Number.isFinite(p.coords.lat) && Number.isFinite(p.coords.lng))
+      ? `${p.coords.lat},${p.coords.lng}`
+      : ''
   ]);
 }
 
 function descompactarPedidos(arr) {
-  return arr.map(c => ({
+  return arr.map(c => {
+    const coordsTexto = c[8] || '';
+    let coords = null;
+    if (coordsTexto && typeof coordsTexto === 'string' && coordsTexto.includes(',')) {
+      const [latTxt, lngTxt] = coordsTexto.split(',');
+      const lat = Number(latTxt);
+      const lng = Number(lngTxt);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        coords = { lat, lng };
+      }
+    }
+    return ({
     id: c[0], nombre: c[1], telefono: c[2], direccion: c[3],
     valor: c[4], mapUrl: c[5],
     entregado: !!(c[6] & 1), noEntregado: !!(c[6] & 2), envioRecogido: !!(c[6] & 4),
-    productos: c[7] ? c[7].split('|') : [], textoOriginal: ''
-  }));
+    productos: c[7] ? c[7].split('|') : [], textoOriginal: '', coords
+  });
+  });
 }
 
 function uint8ToBase64(arr) {
