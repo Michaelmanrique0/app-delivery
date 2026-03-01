@@ -294,8 +294,17 @@ button {
   white-space: nowrap;
 }
 
-.mapa-container {
+.mapa-con-orden {
   margin-top: 20px;
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.mapa-container {
+  margin-top: 0;
+  flex: 1;
+  min-width: 0;
 }
 
 #mapa {
@@ -304,6 +313,59 @@ button {
   border-radius: 10px;
   border: 2px solid #ddd;
   z-index: 1;
+}
+
+.orden-entrega-panel {
+  width: 240px;
+  min-width: 240px;
+  background: #f8f9fa;
+  border: 2px solid #ddd;
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.orden-entrega-panel h3 {
+  margin: 0;
+  color: #333;
+}
+
+.orden-ayuda {
+  margin: 8px 0 12px;
+  font-size: 12px;
+  color: #666;
+}
+
+#listaOrdenEntrega {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 80px;
+}
+
+.orden-item {
+  background: white;
+  border: 1px solid #ddd;
+  border-left: 4px solid #4CAF50;
+  border-radius: 8px;
+  padding: 10px;
+  font-weight: 700;
+  color: #2e7d32;
+  cursor: grab;
+  user-select: none;
+}
+
+.orden-item.dragging {
+  opacity: 0.55;
+  cursor: grabbing;
+}
+
+.orden-vacio {
+  color: #999;
+  text-align: center;
+  font-size: 13px;
+  padding: 20px 10px;
 }
 
 .leaflet-container {
@@ -544,6 +606,15 @@ button {
     width: 100%;
   }
   
+  .mapa-con-orden {
+    flex-direction: column;
+  }
+
+  .orden-entrega-panel {
+    width: 100%;
+    min-width: 0;
+  }
+
   #mapa {
     height: 400px;
   }

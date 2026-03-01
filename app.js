@@ -291,17 +291,13 @@ function renderPedidos() {
 
   if (pedidos.length === 0) {
     lista.innerHTML = '<div class="empty-state" id="emptyState"><p>No hay pedidos aún</p><p style="font-size: 14px;">Pega un formato de pedido arriba para comenzar</p></div>';
+    renderListaOrdenEntrega();
     return;
   }
 
   lista.innerHTML = "";
 
-  const pedidosOrdenados = [...pedidos].sort((a, b) => {
-    return (a.entregado ? 1 : 0) - (b.entregado ? 1 : 0);
-  });
-
-  pedidosOrdenados.forEach((pedido) => {
-    const index = pedidos.indexOf(pedido);
+  pedidos.forEach((pedido, index) => {
     const div = document.createElement("div");
     div.className = "pedido" + (pedido.entregado ? " entregado" : "");
     div.draggable = !pedido.entregado;
@@ -373,10 +369,50 @@ function renderPedidos() {
     document.getElementById('totalEntregarTienda').textContent = entregarTienda.toLocaleString('es-CO');
     elResumen.style.display = (recogidoDelDia > 0 || pagoDomiciliario > 0) ? 'flex' : 'none';
   }
+
+  renderListaOrdenEntrega();
+}
+
+function renderListaOrdenEntrega() {
+  const listaOrden = document.getElementById('listaOrdenEntrega');
+  if (!listaOrden) return;
+
+  const pedidosActivos = pedidos.filter(p => !p.entregado);
+  if (pedidosActivos.length === 0) {
+    listaOrden.innerHTML = '<div class="orden-vacio">No hay pedidos pendientes</div>';
+    return;
+  }
+
+  listaOrden.innerHTML = '';
+  pedidosActivos.forEach((pedido) => {
+    const item = document.createElement('div');
+    item.className = 'orden-item';
+    item.draggable = true;
+    item.dataset.id = pedido.id;
+    item.textContent = `Pedido #${pedido.id}`;
+
+    item.addEventListener('dragstart', handleOrdenDragStart);
+    item.addEventListener('dragover', handleOrdenDragOver);
+    item.addEventListener('drop', handleOrdenDrop);
+    item.addEventListener('dragend', handleOrdenDragEnd);
+
+    listaOrden.appendChild(item);
+  });
+}
+
+function moverPedidoPorId(draggedId, targetId) {
+  const draggedIndex = pedidos.findIndex(p => p.id === draggedId);
+  const targetIndex = pedidos.findIndex(p => p.id === targetId);
+  if (draggedIndex < 0 || targetIndex < 0 || draggedIndex === targetIndex) return false;
+
+  const [removed] = pedidos.splice(draggedIndex, 1);
+  pedidos.splice(targetIndex, 0, removed);
+  return true;
 }
 
 // --- Drag and Drop ---
 let draggedElement = null;
+let draggedOrdenElement = null;
 
 function handleDragStart(e) {
   draggedElement = this;
@@ -394,18 +430,49 @@ function handleDragOver(e) {
 function handleDrop(e) {
   e.stopPropagation();
   if (draggedElement !== this) {
-    const draggedIndex = parseInt(draggedElement.dataset.index);
-    const targetIndex = parseInt(this.dataset.index);
-    const [removed] = pedidos.splice(draggedIndex, 1);
-    pedidos.splice(targetIndex, 0, removed);
-    guardarPedidos();
-    renderPedidos();
-    actualizarMarcadores();
+    const draggedId = parseInt(draggedElement.dataset.id, 10);
+    const targetId = parseInt(this.dataset.id, 10);
+    if (moverPedidoPorId(draggedId, targetId)) {
+      guardarPedidos();
+      renderPedidos();
+      actualizarMarcadores();
+    }
   }
   return false;
 }
 
 function handleDragEnd() {
+  this.classList.remove('dragging');
+}
+
+function handleOrdenDragStart(e) {
+  draggedOrdenElement = this;
+  this.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', this.dataset.id || '');
+}
+
+function handleOrdenDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  return false;
+}
+
+function handleOrdenDrop(e) {
+  e.stopPropagation();
+  if (draggedOrdenElement !== this) {
+    const draggedId = parseInt(draggedOrdenElement.dataset.id, 10);
+    const targetId = parseInt(this.dataset.id, 10);
+    if (moverPedidoPorId(draggedId, targetId)) {
+      guardarPedidos();
+      renderPedidos();
+      actualizarMarcadores();
+    }
+  }
+  return false;
+}
+
+function handleOrdenDragEnd() {
   this.classList.remove('dragging');
 }
 
