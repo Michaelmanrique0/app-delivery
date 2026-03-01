@@ -189,6 +189,7 @@ async function procesarPedido() {
     valor: campos.valor,
     textoOriginal: texto,
     mapUrl: mapUrlFinal,
+    coords: { lat: coords.lat, lng: coords.lng },
     entregado: false,
     noEntregado: false,
     envioRecogido: false
@@ -258,6 +259,7 @@ async function procesarMultiplesPedidos(texto) {
       valor: campos.valor,
       textoOriginal: bloque.trim(),
       mapUrl: mapUrlFinal,
+      coords: { lat: coords.lat, lng: coords.lng },
       entregado: false,
       noEntregado: false,
       envioRecogido: false
@@ -708,29 +710,60 @@ function actualizarMarcadores() {
   if (pedidos.length === 0) return;
 
   let completados = 0;
-  const conUbicacion = pedidos.filter(p => p.mapUrl || p.direccion);
+  const conUbicacion = pedidos.filter(p => p.coords || p.mapUrl || p.direccion);
   const total = conUbicacion.length;
   if (total === 0) return;
 
-  conUbicacion.forEach((pedido, i) => {
+  conUbicacion.forEach((pedido) => {
     const id = pedido.id;
     const url = pedido.mapUrl;
     const dir = pedido.direccion;
     const prods = pedido.productos;
-    setTimeout(() => {
-      const cb = () => {
-        completados++;
-        if (completados === total) {
-          ajustarVistaMapa();
-          dibujarRutaEntreMarcadores();
-        }
-      };
-      if (url) {
-        procesarURLMapaPedido(url, id, prods, cb);
-      } else if (dir) {
-        geocodificarDireccion(dir, id, prods, cb);
+    const cb = () => {
+      completados++;
+      if (completados === total) {
+        ajustarVistaMapa();
+        dibujarRutaEntreMarcadores();
       }
-    }, i * 1000);
+    };
+
+    // Prioriza coordenadas ya conocidas para evitar peticiones de red.
+    if (pedido.coords && Number.isFinite(pedido.coords.lat) && Number.isFinite(pedido.coords.lng)) {
+      procesarURLMapaPedido(`https://www.google.com/maps?q=${pedido.coords.lat},${pedido.coords.lng}`, id, prods, cb);
+      return;
+    }
+
+    if (url) {
+      const coordsDirectas = extraerCoordenadas(url);
+      if (coordsDirectas) {
+        pedido.coords = { lat: coordsDirectas.lat, lng: coordsDirectas.lng };
+        procesarURLMapaPedido(url, id, prods, cb);
+        return;
+      }
+      procesarURLMapaPedido(url, id, prods, (coords) => {
+        if (coords) {
+          pedido.coords = { lat: coords.lat, lng: coords.lng };
+          pedido.mapUrl = `https://www.google.com/maps?q=${coords.lat},${coords.lng}`;
+          guardarPedidos();
+        }
+        cb();
+      });
+      return;
+    }
+
+    if (dir) {
+      geocodificarDireccion(dir, id, prods, (coords) => {
+        if (coords) {
+          pedido.coords = { lat: coords.lat, lng: coords.lng };
+          pedido.mapUrl = `https://www.google.com/maps?q=${coords.lat},${coords.lng}`;
+          guardarPedidos();
+        }
+        cb();
+      });
+      return;
+    }
+
+    cb();
   });
 }
 
@@ -760,10 +793,12 @@ function geocodificarDireccion(direccion, pedidoId, productos, callback) {
             <p style="margin:5px 0;"><strong>Productos:</strong> ${productos && productos.length > 0 ? productos.join(', ') : 'No especificado'}</p>
           </div>`);
         if (pedidoId !== 'TEMP') marcadores.push({ pedidoId, marker });
+        if (callback) callback({ lat, lng });
+        return;
       }
-      if (callback) callback();
+      if (callback) callback(null);
     })
-    .catch(() => { if (callback) callback(); });
+    .catch(() => { if (callback) callback(null); });
 }
 
 function ajustarVistaMapa() {
@@ -857,10 +892,10 @@ function procesarURLMapaPedido(url, pedidoId, productos, callback) {
         <p style="margin:5px 0;"><strong>Productos:</strong> ${productos && productos.length > 0 ? productos.join(', ') : 'No especificado'}</p>
       </div>`);
     marcadores.push({ pedidoId, marker });
-    if (callback) callback();
+    if (callback) callback({ lat, lng });
   } catch (error) {
     alert(`Error al agregar marcador para el pedido #${pedidoId}: ${error.message}`);
-    if (callback) callback();
+    if (callback) callback(null);
   }
 }
 
@@ -1049,9 +1084,15 @@ function verificarDatosEnURL() {
 window.onload = function () {
   pedidos = pedidos.map(p => {
     if (!p.hasOwnProperty('mapUrl')) p.mapUrl = '';
+    if (!p.hasOwnProperty('coords') || !p.coords) p.coords = null;
     if (!p.hasOwnProperty('entregado')) p.entregado = false;
     if (!p.hasOwnProperty('noEntregado')) p.noEntregado = false;
     if (!p.hasOwnProperty('envioRecogido')) p.envioRecogido = false;
+    if (p.coords && (!Number.isFinite(Number(p.coords.lat)) || !Number.isFinite(Number(p.coords.lng)))) {
+      p.coords = null;
+    } else if (p.coords) {
+      p.coords = { lat: Number(p.coords.lat), lng: Number(p.coords.lng) };
+    }
     return p;
   });
   guardarPedidos();
