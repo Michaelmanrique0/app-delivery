@@ -6,6 +6,24 @@ let mapaAjustado = false;
 let nextPedidoId = 1;
 let vistaPedidosActual = 'pendientes';
 
+function ajustarMapaConReintentos() {
+  if (!mapa) return;
+  const elMapa = document.getElementById('mapa');
+  if (!elMapa) return;
+
+  // Fuerza dimensiones mínimas en móviles cuando el layout flex aún no termina de calcular.
+  if (elMapa.clientHeight < 240) {
+    elMapa.style.minHeight = '320px';
+  }
+
+  [0, 120, 280, 500, 900].forEach(ms => {
+    setTimeout(() => {
+      if (!mapa) return;
+      mapa.invalidateSize();
+    }, ms);
+  });
+}
+
 function initMap() {
   mapa = L.map('mapa').setView([4.6097, -74.0817], 12);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -15,15 +33,17 @@ function initMap() {
   actualizarMarcadores();
 
   // En móviles Leaflet puede calcular mal dimensiones iniciales dentro de layouts flex.
-  setTimeout(() => { if (mapa) mapa.invalidateSize(); }, 150);
-  setTimeout(() => { if (mapa) mapa.invalidateSize(); }, 500);
+  ajustarMapaConReintentos();
   window.addEventListener('resize', () => {
     if (!mapa) return;
-    setTimeout(() => mapa.invalidateSize(), 120);
+    ajustarMapaConReintentos();
   });
   window.addEventListener('orientationchange', () => {
     if (!mapa) return;
-    setTimeout(() => mapa.invalidateSize(), 220);
+    ajustarMapaConReintentos();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') ajustarMapaConReintentos();
   });
 }
 
@@ -368,6 +388,7 @@ function renderPedidos() {
   }
 
   renderListaOrdenEntrega();
+  ajustarMapaConReintentos();
 }
 
 function cambiarVistaPedidos(vista) {
