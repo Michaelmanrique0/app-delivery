@@ -5,6 +5,8 @@ let rutaLayer = null;
 let mapaAjustado = false;
 let nextPedidoId = 1;
 let vistaPedidosActual = 'pendientes';
+let vistaPedidosSeleccionadaManual = false;
+const TELEFONO_SOPORTE = '3213153165';
 
 function ajustarMapaConReintentos() {
   if (!mapa) return;
@@ -227,7 +229,8 @@ async function procesarPedido() {
     posicionPendiente: null,
     entregado: false,
     noEntregado: false,
-    envioRecogido: false
+    envioRecogido: false,
+    notificadoEnCamino: false
   });
 
   guardarPedidos();
@@ -299,7 +302,8 @@ async function procesarMultiplesPedidos(texto) {
       posicionPendiente: null,
       entregado: false,
       noEntregado: false,
-      envioRecogido: false
+      envioRecogido: false,
+      notificadoEnCamino: false
     });
 
     agregados++;
@@ -336,6 +340,10 @@ function renderPedidos() {
     else if (pedido.enCurso) enCurso.push({ pedido, index });
     else pendientes.push({ pedido, index });
   });
+
+  if (!vistaPedidosSeleccionadaManual && vistaPedidosActual !== 'entregados') {
+    vistaPedidosActual = enCurso.length > 0 ? 'enCurso' : 'pendientes';
+  }
 
   tabs.forEach(btn => {
     const onClick = btn.getAttribute('onclick') || '';
@@ -393,6 +401,7 @@ function renderPedidos() {
 
 function cambiarVistaPedidos(vista) {
   if (!['pendientes', 'enCurso', 'entregados'].includes(vista)) return;
+  vistaPedidosSeleccionadaManual = true;
   vistaPedidosActual = vista;
   renderPedidos();
 }
@@ -429,6 +438,7 @@ function crearTarjetaPedido(pedido, index) {
   const btnRegresarPendienteHtml = (!pedido.entregado && pedido.enCurso)
     ? `<button class="btn-info" onclick="marcarPendiente(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a pendiente</button>`
     : '';
+  const textoBotonNotificar = pedido.notificadoEnCamino ? 'Volver a notificar' : 'Notificar en camino';
 
   const estadoTexto = pedido.entregado
     ? (pedido.noEntregado ? ' - No entregado' : ' - Entregado')
@@ -462,6 +472,14 @@ function crearTarjetaPedido(pedido, index) {
         </div>
       </details>
       <details class="pedido-dropdown">
+        <summary class="btn-support"><i class="fa-solid fa-headset"></i> Soporte</summary>
+        <div class="pedido-dropdown-content">
+          <button class="btn-support" onclick="soporteLlamarWhatsApp()"><i class="fa-brands fa-whatsapp"></i> Llamar por WhatsApp</button>
+          <button class="btn-support" onclick="mostrarOpcionesMensajeSoporte(${index})"><i class="fa-solid fa-comment-dots"></i> Mensaje por WhatsApp</button>
+          <button class="btn-info" onclick="soporteLlamadaNormal()"><i class="fa-solid fa-phone"></i> Llamada normal</button>
+        </div>
+      </details>
+      <details class="pedido-dropdown">
         <summary class="btn-route"><i class="fa-solid fa-route"></i> Navegación</summary>
         <div class="pedido-dropdown-content">
           <button class="btn-route" onclick="enrutarConMaps(${index}, ${pedido.id})"><i class="fa-solid fa-map-location-dot"></i> Google Maps</button>
@@ -478,7 +496,7 @@ function crearTarjetaPedido(pedido, index) {
     </div>
     <div class="pedido-actions">
       <div class="pedido-actions-row">
-        <button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id})"><i class="fa-solid fa-bullhorn"></i> Notificar en camino</button>
+        <button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id})"><i class="fa-solid fa-bullhorn"></i> ${textoBotonNotificar}</button>
       </div>
       ${btnRegresarPendienteHtml ? `<div class="pedido-actions-row">${btnRegresarPendienteHtml}</div>` : ''}
     </div>
@@ -757,6 +775,195 @@ function whatsappMensaje(numero) {
   window.open(`https://wa.me/${wa}?text=Hola`, "_blank");
 }
 
+function obtenerSoporteWhatsApp() {
+  const limpio = TELEFONO_SOPORTE.replace(/\D/g, '');
+  return limpio.startsWith('57') ? limpio : `57${limpio}`;
+}
+
+function soporteLlamarWhatsApp() {
+  window.open(`https://wa.me/${obtenerSoporteWhatsApp()}`, '_blank');
+}
+
+function soporteLlamadaNormal() {
+  const limpio = TELEFONO_SOPORTE.replace(/\D/g, '');
+  window.location.href = `tel:+57${limpio}`;
+}
+
+let soportePendiente = { index: null };
+let decisionPendiente = { onConfirmar: null, onSecundario: null, onCancelar: null };
+
+function asegurarModalMensajeSoporte() {
+  let modal = document.getElementById('modalMensajeSoporte');
+  if (modal) return modal;
+
+  modal = document.createElement('div');
+  modal.id = 'modalMensajeSoporte';
+  modal.className = 'modal-no-entregado-backdrop';
+  modal.innerHTML = `
+    <div class="modal-no-entregado-card">
+      <h3>Mensajes de soporte</h3>
+      <p>Selecciona el problema a reportar por WhatsApp:</p>
+      <div class="modal-no-entregado-actions">
+        <button class="btn-support" onclick="enviarMensajeSoporte('no_enviado')">Pedido no enviado</button>
+        <button class="btn-support" onclick="enviarMensajeSoporte('pago_reportado')">Cliente reporta pago</button>
+        <button class="btn-support" onclick="enviarMensajeSoporte('producto_incorrecto')">Producto incorrecto</button>
+        <button class="btn-support" onclick="enviarMensajeSoporte('faltan_productos')">Faltan productos</button>
+        <button class="btn-info" onclick="enviarMensajeSoporte('personalizado')">Mensaje personalizado</button>
+      </div>
+      <button class="modal-no-entregado-close" onclick="cerrarModalMensajeSoporte()">Cerrar</button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  return modal;
+}
+
+function mostrarOpcionesMensajeSoporte(index) {
+  const pedido = pedidos[index];
+  if (!pedido) return;
+  soportePendiente = { index };
+  const modal = asegurarModalMensajeSoporte();
+  modal.style.display = 'flex';
+}
+
+function cerrarModalMensajeSoporte() {
+  const modal = document.getElementById('modalMensajeSoporte');
+  if (!modal) return;
+  modal.style.display = 'none';
+}
+
+function construirMensajeSoporte(pedido, tipoProblema) {
+  const idPedido = pedido.id || 'N/A';
+  const productosRaw = pedido.productos && pedido.productos.length > 0
+    ? pedido.productos.join(', ')
+    : 'No especificado';
+  const productos = productosRaw
+    .replace(/(?:^|,\s*)cambio\.?(?=,|$)/gi, '')
+    .replace(/,\s*,/g, ', ')
+    .replace(/^,\s*|\s*,\s*$/g, '')
+    .trim() || 'No especificado';
+
+  if (tipoProblema === 'no_enviado') {
+    return `Pedido ${idPedido} no enviado. Producto(s): ${productos}.`;
+  }
+  if (tipoProblema === 'pago_reportado') {
+    return `Cliente del pedido ${idPedido} me indica que ya realizó el pago. ¿Me confirma? Producto(s): ${productos}.`;
+  }
+  if (tipoProblema === 'producto_incorrecto') {
+    return `Producto del pedido ${idPedido} no es el que solicitó el cliente. Producto(s) enviado(s): ${productos}.`;
+  }
+  if (tipoProblema === 'faltan_productos') {
+    return `El cliente indica que le hacen falta productos en el pedido ${idPedido}. Producto(s) del pedido: ${productos}.`;
+  }
+
+  const detalle = prompt(
+    `Describe el problema del pedido ${idPedido}:`,
+    `Pedido ${idPedido}: `
+  );
+  if (!detalle || !detalle.trim()) return null;
+  return `${detalle.trim()} Producto(s): ${productos}.`;
+}
+
+function enviarMensajeSoporte(tipoProblema) {
+  const { index } = soportePendiente;
+  const pedido = pedidos[index];
+  if (!pedido) {
+    cerrarModalMensajeSoporte();
+    return;
+  }
+
+  const mensaje = construirMensajeSoporte(pedido, tipoProblema);
+  if (!mensaje) return;
+
+  const wa = obtenerSoporteWhatsApp();
+  window.open(`https://wa.me/${wa}?text=${encodeURIComponent(mensaje)}`, '_blank');
+  cerrarModalMensajeSoporte();
+}
+
+function asegurarModalDecision() {
+  let modal = document.getElementById('modalDecision');
+  if (modal) return modal;
+
+  modal = document.createElement('div');
+  modal.id = 'modalDecision';
+  modal.className = 'modal-no-entregado-backdrop';
+  modal.innerHTML = `
+    <div class="modal-no-entregado-card">
+      <h3 id="modalDecisionTitulo">Confirmación</h3>
+      <p id="modalDecisionTexto">¿Deseas continuar?</p>
+      <div class="modal-no-entregado-actions">
+        <button id="modalDecisionBtnConfirmar" class="btn-primary">Aceptar</button>
+        <button id="modalDecisionBtnSecundario" class="btn-info">Opción 2</button>
+      </div>
+      <button id="modalDecisionBtnCancelar" class="modal-no-entregado-close">Cancelar</button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const btnConfirmar = document.getElementById('modalDecisionBtnConfirmar');
+  const btnSecundario = document.getElementById('modalDecisionBtnSecundario');
+  const btnCancelar = document.getElementById('modalDecisionBtnCancelar');
+  if (btnConfirmar) {
+    btnConfirmar.onclick = () => {
+      const accion = decisionPendiente.onConfirmar;
+      cerrarModalDecision();
+      if (typeof accion === 'function') accion();
+    };
+  }
+  if (btnSecundario) {
+    btnSecundario.onclick = () => {
+      const accion = decisionPendiente.onSecundario;
+      cerrarModalDecision();
+      if (typeof accion === 'function') accion();
+    };
+  }
+  if (btnCancelar) {
+    btnCancelar.onclick = () => {
+      const accion = decisionPendiente.onCancelar;
+      cerrarModalDecision();
+      if (typeof accion === 'function') accion();
+    };
+  }
+
+  return modal;
+}
+
+function mostrarModalDecision(opciones) {
+  const modal = asegurarModalDecision();
+  const titulo = document.getElementById('modalDecisionTitulo');
+  const texto = document.getElementById('modalDecisionTexto');
+  const btnConfirmar = document.getElementById('modalDecisionBtnConfirmar');
+  const btnSecundario = document.getElementById('modalDecisionBtnSecundario');
+  const btnCancelar = document.getElementById('modalDecisionBtnCancelar');
+
+  if (titulo) titulo.textContent = opciones.titulo || 'Confirmación';
+  if (texto) texto.textContent = opciones.texto || '¿Deseas continuar?';
+  if (btnConfirmar) {
+    btnConfirmar.textContent = opciones.textoConfirmar || 'Aceptar';
+    btnConfirmar.className = opciones.claseConfirmar || 'btn-primary';
+  }
+  if (btnSecundario) {
+    btnSecundario.textContent = opciones.textoSecundario || 'Opción 2';
+    btnSecundario.className = opciones.claseSecundario || 'btn-info';
+    btnSecundario.style.display = opciones.mostrarSecundario === false ? 'none' : 'inline-block';
+  }
+  if (btnCancelar) btnCancelar.textContent = opciones.textoCancelar || 'Cancelar';
+
+  decisionPendiente = {
+    onConfirmar: opciones.onConfirmar || null,
+    onSecundario: opciones.onSecundario || null,
+    onCancelar: opciones.onCancelar || null
+  };
+
+  modal.style.display = 'flex';
+}
+
+function cerrarModalDecision() {
+  const modal = document.getElementById('modalDecision');
+  if (!modal) return;
+  modal.style.display = 'none';
+  decisionPendiente = { onConfirmar: null, onSecundario: null, onCancelar: null };
+}
+
 // --- Fotos / WhatsApp Admin ---
 
 function fotoEntregado(index, pedidoId) {
@@ -859,10 +1066,41 @@ function getUbicacionPedido(index, pedidoId) {
   return null;
 }
 
-function enrutarConMaps(index, pedidoId) {
-  const u = getUbicacionPedido(index, pedidoId);
+function obtenerPedidoPorId(pedidoId) {
+  const indexActual = pedidos.findIndex(p => p.id === pedidoId);
+  if (indexActual >= 0) return { pedido: pedidos[indexActual], indexActual };
+  return { pedido: null, indexActual: -1 };
+}
+
+function abrirNavegacion(tipo, index, pedidoId) {
+  const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
+  const indexFinal = indexActual >= 0 ? indexActual : index;
+  const pedidoFinal = pedido || pedidos[indexFinal];
+  if (!pedidoFinal) return;
+
+  const u = getUbicacionPedido(indexFinal, pedidoId);
   if (!u) { alert('No hay ubicación disponible para este pedido.'); return; }
-  marcarEnCurso(index);
+  marcarEnCurso(indexFinal);
+
+  if (tipo === 'waze') {
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (u.lat != null && u.lng != null) {
+      if (isMobile) {
+        window.location.href = `waze://?ll=${u.lat},${u.lng}&navigate=yes`;
+      } else {
+        window.open(`https://waze.com/ul?ll=${u.lat},${u.lng}&navigate=yes`, '_blank');
+      }
+    } else {
+      const q = encodeURIComponent(u.direccion);
+      if (isMobile) {
+        window.location.href = `waze://?q=${q}&navigate=yes`;
+      } else {
+        window.open(`https://waze.com/ul?q=${q}&navigate=yes`, '_blank');
+      }
+    }
+    return;
+  }
+
   const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
   const isAndroid = /Android/.test(navigator.userAgent);
   if (u.lat != null && u.lng != null) {
@@ -885,37 +1123,67 @@ function enrutarConMaps(index, pedidoId) {
   }
 }
 
-function enrutarConWaze(index, pedidoId) {
-  const u = getUbicacionPedido(index, pedidoId);
-  if (!u) { alert('No hay ubicación disponible para este pedido.'); return; }
-  marcarEnCurso(index);
-  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-  if (u.lat != null && u.lng != null) {
-    if (isMobile) {
-      window.location.href = `waze://?ll=${u.lat},${u.lng}&navigate=yes`;
-    } else {
-      window.open(`https://waze.com/ul?ll=${u.lat},${u.lng}&navigate=yes`, '_blank');
-    }
-  } else {
-    const q = encodeURIComponent(u.direccion);
-    if (isMobile) {
-      window.location.href = `waze://?q=${q}&navigate=yes`;
-    } else {
-      window.open(`https://waze.com/ul?q=${q}&navigate=yes`, '_blank');
-    }
+function manejarNavegacionConNotificacion(index, pedidoId, tipoNavegacion) {
+  const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
+  const indexFinal = indexActual >= 0 ? indexActual : index;
+  if (!pedido) return;
+
+  if (pedido.notificadoEnCamino) {
+    abrirNavegacion(tipoNavegacion, indexFinal, pedidoId);
+    return;
   }
+
+  mostrarModalDecision({
+    titulo: 'Notificar al cliente',
+    texto: `El pedido #${pedidoId} no ha sido notificado en camino.\n¿Quieres notificar al cliente antes de navegar?`,
+    textoConfirmar: 'Si, notificar y navegar',
+    claseConfirmar: 'btn-notify',
+    textoSecundario: 'No, solo navegar',
+    claseSecundario: 'btn-route',
+    textoCancelar: 'Cancelar',
+    onConfirmar: () => {
+      notificarEnCamino(indexFinal, pedidoId, {
+        onSuccess: () => abrirNavegacion(tipoNavegacion, indexFinal, pedidoId)
+      });
+    },
+    onSecundario: () => abrirNavegacion(tipoNavegacion, indexFinal, pedidoId)
+  });
+}
+
+function enrutarConMaps(index, pedidoId) {
+  manejarNavegacionConNotificacion(index, pedidoId, 'maps');
+}
+
+function enrutarConWaze(index, pedidoId) {
+  manejarNavegacionConNotificacion(index, pedidoId, 'waze');
 }
 
 // --- Notificar en camino ---
 
-function notificarEnCamino(index, pedidoId) {
-  const pedido = pedidos[index];
-  if (!pedido) return;
-  const telefonoCliente = pedido.telefono ? String(pedido.telefono).replace(/\D/g, '') : '';
+function notificarEnCamino(index, pedidoId, opciones = {}) {
+  const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
+  const indexFinal = indexActual >= 0 ? indexActual : index;
+  const pedidoFinal = pedido || pedidos[indexFinal];
+  if (!pedidoFinal) return;
+  if (pedidoFinal.notificadoEnCamino && !opciones.forzarReenvio) {
+    mostrarModalDecision({
+      titulo: 'Pedido ya notificado',
+      texto: `El pedido #${pedidoId} ya fue notificado.\n¿Volver a notificar?`,
+      textoConfirmar: 'Volver a notificar',
+      claseConfirmar: 'btn-notify',
+      textoSecundario: 'Salir',
+      claseSecundario: 'btn-info',
+      textoCancelar: 'Cerrar',
+      onConfirmar: () => notificarEnCamino(indexFinal, pedidoId, { ...opciones, forzarReenvio: true }),
+      onSecundario: () => {}
+    });
+    return;
+  }
+  const telefonoCliente = pedidoFinal.telefono ? String(pedidoFinal.telefono).replace(/\D/g, '') : '';
   if (!telefonoCliente) { alert('No hay número de teléfono del cliente disponible'); return; }
 
-  const nombre = pedido.nombre || 'cliente';
-  const precio = parseInt(pedido.valor || 0, 10).toLocaleString('es-CO');
+  const nombre = pedidoFinal.nombre || 'cliente';
+  const precio = parseInt(pedidoFinal.valor || 0, 10).toLocaleString('es-CO');
   const wa = telefonoCliente.startsWith('57') ? telefonoCliente : `57${telefonoCliente}`;
 
   const mensaje = `Hola ${nombre}
@@ -934,6 +1202,10 @@ O si gustas puedes pagar por Bre-B con la llave: @NEQUIMIC7057
 Gracias por tu compra ${nombre}`;
 
   window.open(`https://wa.me/${wa}?text=${encodeURIComponent(mensaje)}`, '_blank');
+  pedidoFinal.notificadoEnCamino = true;
+  guardarPedidos();
+  renderPedidos();
+  if (typeof opciones.onSuccess === 'function') opciones.onSuccess();
 }
 
 // --- Mapa: marcadores y ruta ---
@@ -1149,7 +1421,7 @@ function compactarPedidos() {
     p.direccion || '',
     p.valor || '0',
     p.mapUrl || '',
-    (p.entregado ? 1 : 0) | (p.noEntregado ? 2 : 0) | (p.envioRecogido ? 4 : 0) | (p.enCurso ? 8 : 0),
+    (p.entregado ? 1 : 0) | (p.noEntregado ? 2 : 0) | (p.envioRecogido ? 4 : 0) | (p.enCurso ? 8 : 0) | (p.notificadoEnCamino ? 16 : 0),
     (p.productos || []).join('|'),
     (p.coords && Number.isFinite(p.coords.lat) && Number.isFinite(p.coords.lng))
       ? `${p.coords.lat},${p.coords.lng}`
@@ -1173,7 +1445,7 @@ function descompactarPedidos(arr) {
     return ({
     id: c[0], nombre: c[1], telefono: c[2], direccion: c[3],
     valor: c[4], mapUrl: c[5],
-    entregado: !!(c[6] & 1), noEntregado: !!(c[6] & 2), envioRecogido: !!(c[6] & 4), enCurso: !!(c[6] & 8),
+    entregado: !!(c[6] & 1), noEntregado: !!(c[6] & 2), envioRecogido: !!(c[6] & 4), enCurso: !!(c[6] & 8), notificadoEnCamino: !!(c[6] & 16),
     productos: c[7] ? c[7].split('|') : [], textoOriginal: '', coords,
     posicionPendiente: Number.isInteger(Number(c[9])) ? Number(c[9]) : null
   });
@@ -1269,6 +1541,7 @@ async function aplicarImportacion() {
       if (!p.hasOwnProperty('entregado')) p.entregado = false;
       if (!p.hasOwnProperty('noEntregado')) p.noEntregado = false;
       if (!p.hasOwnProperty('envioRecogido')) p.envioRecogido = false;
+      if (!p.hasOwnProperty('notificadoEnCamino')) p.notificadoEnCamino = false;
       if (p.entregado) p.posicionPendiente = null;
       return p;
     });
@@ -1350,6 +1623,7 @@ window.onload = function () {
     if (!p.hasOwnProperty('entregado')) p.entregado = false;
     if (!p.hasOwnProperty('noEntregado')) p.noEntregado = false;
     if (!p.hasOwnProperty('envioRecogido')) p.envioRecogido = false;
+    if (!p.hasOwnProperty('notificadoEnCamino')) p.notificadoEnCamino = false;
     if (p.entregado) {
       p.enCurso = false;
       p.posicionPendiente = null;

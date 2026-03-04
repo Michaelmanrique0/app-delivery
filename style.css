@@ -266,10 +266,38 @@ button i,
 }
 
 .total-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 10px 16px;
   border-radius: 8px;
   font-size: 16px;
   font-weight: bold;
+}
+
+.total-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+}
+
+.icon-recogido-dia {
+  color: #0f5132;
+  background: #d1e7dd;
+}
+
+.icon-pago-domiciliario {
+  color: #664d03;
+  background: #fff3cd;
+}
+
+.icon-entregar-tienda {
+  color: #084298;
+  background: #cfe2ff;
 }
 
 .total-recogido-dia {
@@ -593,6 +621,15 @@ button i,
 
 .btn-notify:hover {
   background: var(--triad-a-dark);
+}
+
+.btn-support {
+  background: #7c3aed;
+  color: #ffffff;
+}
+
+.btn-support:hover {
+  background: #6d28d9;
 }
 
 .btn-sync {
