@@ -357,16 +357,30 @@ function renderPedidos() {
     vistaPedidosActual = enCurso.length > 0 ? 'enCurso' : 'pendientes';
   }
 
+  if (vistaPedidosActual === 'enCurso' && enCurso.length === 0) {
+    vistaPedidosActual = 'pendientes';
+  }
+  if (vistaPedidosActual === 'entregados' && entregados.length === 0) {
+    vistaPedidosActual = 'pendientes';
+  }
+  if (vistaPedidosActual === 'cancelados' && cancelados.length === 0) {
+    vistaPedidosActual = 'pendientes';
+  }
+
   tabs.forEach(btn => {
     const onClick = btn.getAttribute('onclick') || '';
     if (onClick.includes("'pendientes'")) {
       btn.innerHTML = `<i class="fa-regular fa-clock"></i> Pendientes (${pendientes.length})`;
+      btn.style.display = 'inline-flex';
     } else if (onClick.includes("'enCurso'")) {
       btn.innerHTML = `<i class="fa-solid fa-truck-fast"></i> En curso (${enCurso.length})`;
+      btn.style.display = enCurso.length > 0 ? 'inline-flex' : 'none';
     } else if (onClick.includes("'entregados'")) {
       btn.innerHTML = `<i class="fa-solid fa-circle-check"></i> Finalizados (${entregados.length})`;
+      btn.style.display = entregados.length > 0 ? 'inline-flex' : 'none';
     } else if (onClick.includes("'cancelados'")) {
       btn.innerHTML = `<i class="fa-solid fa-ban"></i> Cancelados (${cancelados.length})`;
+      btn.style.display = cancelados.length > 0 ? 'inline-flex' : 'none';
     }
   });
 
@@ -416,12 +430,16 @@ function renderPedidos() {
     const elEntregarTienda = document.getElementById('totalEntregarTienda');
     const elPagadoNequi = document.getElementById('totalPagadoNequi');
     const elPagadoDaviplata = document.getElementById('totalPagadoDaviplata');
+    const itemNequi = elPagadoNequi ? elPagadoNequi.closest('.total-item') : null;
+    const itemDaviplata = elPagadoDaviplata ? elPagadoDaviplata.closest('.total-item') : null;
 
     if (elRecogidoDia) elRecogidoDia.textContent = recogidoDelDia.toLocaleString('es-CO');
     if (elPagoDomiciliario) elPagoDomiciliario.textContent = pagoDomiciliario.toLocaleString('es-CO');
     if (elEntregarTienda) elEntregarTienda.textContent = entregarTienda.toLocaleString('es-CO');
     if (elPagadoNequi) elPagadoNequi.textContent = totalPagadoNequi.toLocaleString('es-CO');
     if (elPagadoDaviplata) elPagadoDaviplata.textContent = totalPagadoDaviplata.toLocaleString('es-CO');
+    if (itemNequi) itemNequi.style.display = totalPagadoNequi > 0 ? 'inline-flex' : 'none';
+    if (itemDaviplata) itemDaviplata.style.display = totalPagadoDaviplata > 0 ? 'inline-flex' : 'none';
     elResumen.style.display = (recogidoDelDia > 0 || pagoDomiciliario > 0 || totalPagadoNequi > 0 || totalPagadoDaviplata > 0) ? 'flex' : 'none';
   }
 

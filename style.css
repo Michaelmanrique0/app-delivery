@@ -280,19 +280,22 @@ button i,
 
 .totales-resumen {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 15px;
+  align-items: flex-start;
 }
 
 .total-item {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 16px;
+  padding: 8px 12px;
   border-radius: 8px;
-  font-size: 16px;
+  font-size: 14px;
   font-weight: bold;
+  width: auto;
+  max-width: 360px;
 }
 
 .total-icon {
