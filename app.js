@@ -7,6 +7,153 @@ let nextPedidoId = 1;
 let vistaPedidosActual = 'pendientes';
 let vistaPedidosSeleccionadaManual = false;
 const TELEFONO_SOPORTE = '3213153165';
+const CONFIG_NOTIFICACION_KEY = 'configNotificacionPago';
+const CONFIG_NOTIFICACION_DEFAULT = {
+  tieneNequi: true,
+  tieneDaviplata: true,
+  numeroDigital: '3143645061',
+  tieneLlave: true,
+  llavePago: '@NEQUIMIC7057'
+};
+
+let configNotificacionPago = cargarConfigNotificacionPago();
+
+function cargarConfigNotificacionPago() {
+  try {
+    const guardado = JSON.parse(localStorage.getItem(CONFIG_NOTIFICACION_KEY) || '{}');
+    const numeroLegacy = String(guardado.numeroNequi || guardado.numeroDaviplata || '');
+    const boolSeguro = (valor, predeterminado) => {
+      if (typeof valor === 'boolean') return valor;
+      if (typeof valor === 'string') {
+        const normalizado = valor.trim().toLowerCase();
+        if (normalizado === 'false') return false;
+        if (normalizado === 'true') return true;
+      }
+      return predeterminado;
+    };
+    return {
+      tieneNequi: boolSeguro(guardado.tieneNequi, true),
+      tieneDaviplata: boolSeguro(guardado.tieneDaviplata, true),
+      numeroDigital: String(guardado.numeroDigital || numeroLegacy || CONFIG_NOTIFICACION_DEFAULT.numeroDigital),
+      tieneLlave: boolSeguro(guardado.tieneLlave, true),
+      llavePago: String(guardado.llavePago || CONFIG_NOTIFICACION_DEFAULT.llavePago)
+    };
+  } catch (e) {
+    return { ...CONFIG_NOTIFICACION_DEFAULT };
+  }
+}
+
+function guardarConfigNotificacionPago() {
+  localStorage.setItem(CONFIG_NOTIFICACION_KEY, JSON.stringify(configNotificacionPago));
+}
+
+function actualizarVisibilidadConfigNotificacion() {
+  const numeroDigitalWrap = document.getElementById('cfgNumeroDigitalWrap');
+  const llaveWrap = document.getElementById('cfgLlaveWrap');
+  const tieneNequi = document.getElementById('cfgTieneNequi');
+  const tieneDaviplata = document.getElementById('cfgTieneDaviplata');
+  const tieneLlave = document.getElementById('cfgTieneLlave');
+  const mostrarNumeroDigital = !!(tieneNequi && tieneDaviplata && (tieneNequi.checked || tieneDaviplata.checked));
+  if (numeroDigitalWrap) numeroDigitalWrap.style.display = mostrarNumeroDigital ? 'block' : 'none';
+  if (llaveWrap && tieneLlave) llaveWrap.style.display = tieneLlave.checked ? 'block' : 'none';
+}
+
+function cargarConfigNotificacionEnUI() {
+  const tieneNequi = document.getElementById('cfgTieneNequi');
+  const tieneDaviplata = document.getElementById('cfgTieneDaviplata');
+  const numeroDigital = document.getElementById('cfgNumeroDigital');
+  const tieneLlave = document.getElementById('cfgTieneLlave');
+  const llavePago = document.getElementById('cfgLlavePago');
+  if (!tieneNequi || !numeroDigital || !tieneDaviplata || !tieneLlave || !llavePago) return;
+
+  tieneNequi.checked = !!configNotificacionPago.tieneNequi;
+  numeroDigital.value = configNotificacionPago.numeroDigital || '';
+  tieneDaviplata.checked = !!configNotificacionPago.tieneDaviplata;
+  tieneLlave.checked = !!configNotificacionPago.tieneLlave;
+  llavePago.value = configNotificacionPago.llavePago || '';
+
+  [tieneNequi, tieneDaviplata, tieneLlave].forEach((el) => {
+    el.onchange = () => {
+      actualizarVisibilidadConfigNotificacion();
+      guardarConfigNotificacionDesdeUI(false);
+    };
+  });
+  if (numeroDigital) numeroDigital.onchange = () => guardarConfigNotificacionDesdeUI(false);
+  if (llavePago) llavePago.onchange = () => guardarConfigNotificacionDesdeUI(false);
+  actualizarVisibilidadConfigNotificacion();
+}
+
+function guardarConfigNotificacionDesdeUI(mostrarMensaje = true) {
+  const tieneNequi = document.getElementById('cfgTieneNequi');
+  const tieneDaviplata = document.getElementById('cfgTieneDaviplata');
+  const numeroDigital = document.getElementById('cfgNumeroDigital');
+  const tieneLlave = document.getElementById('cfgTieneLlave');
+  const llavePago = document.getElementById('cfgLlavePago');
+  if (!tieneNequi || !numeroDigital || !tieneDaviplata || !tieneLlave || !llavePago) return;
+
+  configNotificacionPago = {
+    tieneNequi: !!tieneNequi.checked,
+    tieneDaviplata: !!tieneDaviplata.checked,
+    numeroDigital: String(numeroDigital.value || '').replace(/\D/g, ''),
+    tieneLlave: !!tieneLlave.checked,
+    llavePago: String(llavePago.value || '').trim()
+  };
+
+  guardarConfigNotificacionPago();
+  cargarConfigNotificacionEnUI();
+  const panelConfig = document.querySelector('.configuracion-notificacion');
+  if (panelConfig && panelConfig.open) panelConfig.open = false;
+  if (mostrarMensaje) {
+    mostrarModalDecision({
+      titulo: 'Configuración guardada',
+      texto: 'La configuración de medios de pago fue actualizada.',
+      textoConfirmar: 'Aceptar',
+      claseConfirmar: 'btn-success',
+      mostrarSecundario: false,
+      textoCancelar: 'Cerrar',
+      onConfirmar: () => {},
+      onCancelar: () => {}
+    });
+  }
+}
+
+function construirBloquePagoNotificacion() {
+  const lineas = [];
+  if (configNotificacionPago.tieneNequi && configNotificacionPago.numeroDigital) {
+    lineas.push(`- Nequi: ${configNotificacionPago.numeroDigital}`);
+  }
+  if (configNotificacionPago.tieneDaviplata && configNotificacionPago.numeroDigital) {
+    lineas.push(`- Daviplata: ${configNotificacionPago.numeroDigital}`);
+  }
+  if (configNotificacionPago.tieneLlave && configNotificacionPago.llavePago) {
+    lineas.push(`- Bre-B: ${configNotificacionPago.llavePago}`);
+  }
+
+  if (lineas.length === 0) {
+    return 'Actualmente no hay medios de pago digitales configurados.';
+  }
+  return `Si deseas pagar por transferencia, usa:\n${lineas.join('\n')}`;
+}
+
+function normalizarTextoParaWhatsApp(texto) {
+  return String(texto || '')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[•·•]/g, '')
+    .replace(/[^\x20-\x7E\u00A0-\u00FF\n\r\t]/g, '')
+    .replace(/[ ]{2,}/g, ' ')
+    .replace(/\r\n/g, '\n');
+}
+
+function abrirWhatsAppConTexto(telefono, mensaje) {
+  const limpio = String(telefono || '').replace(/\D/g, '');
+  if (!limpio) return;
+  const wa = limpio.startsWith('57') ? limpio : `57${limpio}`;
+  const texto = encodeURIComponent(normalizarTextoParaWhatsApp(mensaje));
+  const url = `https://api.whatsapp.com/send?phone=${wa}&text=${texto}&src=delivery&t=${Date.now()}`;
+  window.open(url, '_blank');
+}
 
 function ajustarMapaConReintentos() {
   if (!mapa) return;
@@ -231,6 +378,7 @@ async function procesarPedido() {
     noEntregado: false,
     envioRecogido: false,
     notificadoEnCamino: false,
+    llegoDestino: false,
     cancelado: false,
     metodoPagoEntrega: '',
     montoNequi: 0,
@@ -309,6 +457,7 @@ async function procesarMultiplesPedidos(texto) {
       noEntregado: false,
       envioRecogido: false,
       notificadoEnCamino: false,
+      llegoDestino: false,
       cancelado: false,
       metodoPagoEntrega: '',
       montoNequi: 0,
@@ -373,7 +522,7 @@ function renderPedidos() {
       btn.innerHTML = `<i class="fa-regular fa-clock"></i> Pendientes (${pendientes.length})`;
       btn.style.display = 'inline-flex';
     } else if (onClick.includes("'enCurso'")) {
-      btn.innerHTML = `<i class="fa-solid fa-truck-fast"></i> En curso (${enCurso.length})`;
+      btn.innerHTML = `<i class="fa-solid fa-truck-fast"></i> En ruta (${enCurso.length})`;
       btn.style.display = enCurso.length > 0 ? 'inline-flex' : 'none';
     } else if (onClick.includes("'entregados'")) {
       btn.innerHTML = `<i class="fa-solid fa-circle-check"></i> Finalizados (${entregados.length})`;
@@ -402,7 +551,7 @@ function renderPedidos() {
   });
 
   if (vistaPedidosActual === 'enCurso') {
-    lista.appendChild(crearSeccionPedidos('seccion-en-curso', enCurso, 'No hay pedidos en curso'));
+    lista.appendChild(crearSeccionPedidos('seccion-en-curso', enCurso, 'No hay pedidos en ruta'));
   } else if (vistaPedidosActual === 'entregados') {
     lista.appendChild(crearSeccionPedidos('seccion-entregados', entregados, 'No hay pedidos entregados'));
   } else if (vistaPedidosActual === 'cancelados') {
@@ -486,30 +635,47 @@ function crearTarjetaPedido(pedido, index) {
   const btnNoEntregadoHtml = pedido.entregado
     ? `<div class="pedido-no-entregado-wrap"><button class="btn-warning" onclick="marcarNoEntregado(${index})" style="width: 100%;"><i class="fa-solid fa-rotate-left"></i> No entregado</button></div>`
     : '';
-  const btnRegresarPendienteHtml = (!pedido.entregado && !pedido.cancelado && pedido.enCurso)
-    ? `<button class="btn-info" onclick="marcarPendiente(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a pendiente</button>`
+  const etapaActual = obtenerEtapaPedidoUI(pedido);
+  const btnRegresarPendienteHtml = etapaActual === 'enRuta'
+    ? `<button class="btn-info" onclick="marcarPendiente(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a pendientes</button>`
     : '';
-  const btnCancelarHtml = (!pedido.entregado && !pedido.cancelado)
+  const btnCancelarHtml = (!pedido.entregado && !pedido.cancelado && etapaActual !== 'enRuta' && etapaActual !== 'enDestino')
     ? `<button class="btn-warning" onclick="marcarCancelado(${index})"><i class="fa-solid fa-ban"></i> Cancelar pedido</button>`
     : '';
   const btnReactivarCanceladoHtml = pedido.cancelado
     ? `<button class="btn-success" onclick="reactivarPedidoCancelado(${index})"><i class="fa-solid fa-rotate-left"></i> Reactivar pedido</button>`
     : '';
   const textoBotonNotificar = pedido.notificadoEnCamino ? 'Volver a notificar' : 'Notificar en camino';
-  const btnNotificarHtml = (!pedido.entregado && !pedido.cancelado)
+  const btnNotificarHtml = etapaActual === 'notificar'
     ? `<button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id})"><i class="fa-solid fa-bullhorn"></i> ${textoBotonNotificar}</button>`
+    : '';
+  const btnNotificarNuevamenteHtml = (!pedido.entregado && !pedido.cancelado && pedido.notificadoEnCamino && etapaActual !== 'enRuta' && etapaActual !== 'enDestino')
+    ? `<button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id}, { forzarReenvio: true })"><i class="fa-solid fa-bullhorn"></i> Notificar nuevamente al cliente</button>`
+    : '';
+  const btnEnrutarHtml = etapaActual === 'enrutar'
+    ? `<button class="btn-route" onclick="enrutarConApps(${index}, ${pedido.id})"><i class="fa-solid fa-route"></i> Enrutar</button>`
+    : '';
+  const btnLlegueDestinoHtml = etapaActual === 'enRuta'
+    ? `<button class="btn-primary" onclick="marcarLlegueDestino(${index}, ${pedido.id})"><i class="fa-solid fa-flag-checkered"></i> Llegué al destino</button>`
+    : '';
+  const bloqueAccionesDestinoHtml = etapaActual === 'enDestino'
+    ? `
+      <div class="pedido-actions-row">
+        <button class="btn-success" onclick="mostrarOpcionesFinalizarEntrega(${index}, ${pedido.id})"><i class="fa-solid fa-circle-check"></i> Finalizar entrega</button>
+      </div>
+    `
     : '';
 
   const estadoTexto = pedido.entregado
     ? (pedido.noEntregado ? ' - No entregado' : ' - Entregado')
-    : (pedido.cancelado ? ' - Cancelado' : (pedido.enCurso ? ' - En curso' : ''));
+    : (pedido.cancelado ? ' - Cancelado' : (pedido.enCurso ? (pedido.llegoDestino ? ' - En destino' : ' - En ruta') : ''));
 
   div.innerHTML = `
     <div class="pedido-header">
       <div class="pedido-numero">Pedido #${pedido.id}${estadoTexto}</div>
       <div class="pedido-header-btns">
-        <button class="btn-edit" onclick="editarPedido(${index})" style="padding: 5px 10px; font-size: 12px;"><i class="fa-solid fa-pen-to-square"></i> Editar</button>
-        <button class="btn-danger" onclick="eliminarPedido(${index})" style="padding: 5px 10px; font-size: 12px;"><i class="fa-solid fa-trash"></i> Eliminar</button>
+        ${!pedido.cancelado ? `<button class="btn-edit" onclick="editarPedido(${index})" style="padding: 5px 10px; font-size: 12px;"><i class="fa-solid fa-pen-to-square"></i> Editar</button>` : ''}
+        <button class="btn-danger btn-icon-only" onclick="eliminarPedido(${index})" title="Eliminar pedido" aria-label="Eliminar pedido"><i class="fa-solid fa-trash"></i></button>
       </div>
     </div>
     <div class="pedido-cliente">${pedido.nombre || 'Cliente no especificado'}</div>
@@ -522,6 +688,7 @@ function crearTarjetaPedido(pedido, index) {
       <strong>Productos:</strong> ${pedido.productos && pedido.productos.length > 0 ? pedido.productos.join(', ') : 'No especificado'}<br>
       <strong>Valor:</strong> $${valorFormato}<br>
     </div>
+    ${etapaActual === 'enDestino' ? `
     <div class="pedido-tools">
       <details class="pedido-dropdown">
         <summary class="btn-info"><i class="fa-solid fa-address-book"></i> Contacto</summary>
@@ -539,23 +706,13 @@ function crearTarjetaPedido(pedido, index) {
           <button class="btn-info" onclick="soporteLlamadaNormal()"><i class="fa-solid fa-phone"></i> Llamada normal</button>
         </div>
       </details>
-      <details class="pedido-dropdown">
-        <summary class="btn-route"><i class="fa-solid fa-route"></i> Navegación</summary>
-        <div class="pedido-dropdown-content">
-          <button class="btn-route" onclick="enrutarConMaps(${index}, ${pedido.id})"><i class="fa-solid fa-map-location-dot"></i> Google Maps</button>
-          <button class="btn-route" onclick="enrutarConWaze(${index}, ${pedido.id})"><i class="fa-solid fa-location-arrow"></i> Waze</button>
-        </div>
-      </details>
-      <details class="pedido-dropdown">
-        <summary class="btn-camera"><i class="fa-solid fa-camera"></i> Evidencia</summary>
-        <div class="pedido-dropdown-content">
-          <button class="btn-camera" onclick="fotoEntregado(${index}, ${pedido.id})"><i class="fa-solid fa-camera"></i> Foto evidencia entregado</button>
-          <button class="btn-camera" onclick="mostrarOpcionesNoEntregado(${index}, ${pedido.id})"><i class="fa-solid fa-camera-rotate"></i> Foto no entregado</button>
-        </div>
-      </details>
-    </div>
+    </div>` : ''}
     <div class="pedido-actions">
       ${btnNotificarHtml ? `<div class="pedido-actions-row">${btnNotificarHtml}</div>` : ''}
+      ${btnNotificarNuevamenteHtml ? `<div class="pedido-actions-row">${btnNotificarNuevamenteHtml}</div>` : ''}
+      ${btnEnrutarHtml ? `<div class="pedido-actions-row">${btnEnrutarHtml}</div>` : ''}
+      ${btnLlegueDestinoHtml ? `<div class="pedido-actions-row">${btnLlegueDestinoHtml}</div>` : ''}
+      ${bloqueAccionesDestinoHtml}
       ${btnRegresarPendienteHtml ? `<div class="pedido-actions-row">${btnRegresarPendienteHtml}</div>` : ''}
       ${btnCancelarHtml ? `<div class="pedido-actions-row">${btnCancelarHtml}</div>` : ''}
       ${btnReactivarCanceladoHtml ? `<div class="pedido-actions-row">${btnReactivarCanceladoHtml}</div>` : ''}
@@ -689,6 +846,7 @@ function marcarEntregado(index) {
   if (!pedido) return;
   pedido.entregado = true;
   pedido.enCurso = false;
+  pedido.llegoDestino = false;
   pedido.posicionPendiente = null;
   guardarPedidos();
   renderPedidos();
@@ -698,8 +856,14 @@ function marcarEntregado(index) {
 function marcarEnCurso(index) {
   const pedido = pedidos[index];
   if (!pedido || pedido.entregado || pedido.cancelado) return;
+  const estabaEnCurso = !!pedido.enCurso;
   if (pedido.posicionPendiente == null) pedido.posicionPendiente = index;
   pedido.enCurso = true;
+  if (!pedido.hasOwnProperty('llegoDestino')) pedido.llegoDestino = false;
+  if (!estabaEnCurso) {
+    vistaPedidosSeleccionadaManual = true;
+    vistaPedidosActual = 'enCurso';
+  }
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
@@ -713,6 +877,7 @@ function marcarPendiente(index) {
     ? pedido.posicionPendiente
     : null;
   pedido.enCurso = false;
+  pedido.llegoDestino = false;
   pedido.posicionPendiente = null;
 
   if (posicionOriginal !== null) {
@@ -731,6 +896,7 @@ function marcarNoEntregado(index) {
   if (!pedido) return;
   pedido.entregado = false;
   pedido.enCurso = false;
+  pedido.llegoDestino = false;
   pedido.posicionPendiente = null;
   pedido.noEntregado = false;
   pedido.envioRecogido = false;
@@ -745,6 +911,7 @@ function marcarCancelado(index) {
   if (!pedido || pedido.entregado || pedido.cancelado) return;
   pedido.cancelado = true;
   pedido.enCurso = false;
+  pedido.llegoDestino = false;
   pedido.posicionPendiente = null;
   guardarPedidos();
   renderPedidos();
@@ -757,6 +924,7 @@ function reactivarPedidoCancelado(index) {
   pedido.cancelado = false;
   pedido.entregado = false;
   pedido.enCurso = false;
+  pedido.llegoDestino = false;
   pedido.posicionPendiente = null;
   guardarPedidos();
   renderPedidos();
@@ -774,35 +942,83 @@ function eliminarTodos() {
 
 // --- Editar pedido ---
 
-function editarPedido(index) {
+let edicionPedidoPendiente = { index: null };
+
+function asegurarModalEditarPedido() {
+  let modal = document.getElementById('modalEditarPedido');
+  if (modal) return modal;
+
+  modal = document.createElement('div');
+  modal.id = 'modalEditarPedido';
+  modal.className = 'modal-no-entregado-backdrop';
+  modal.innerHTML = `
+    <div class="modal-no-entregado-card">
+      <h3>Editar pedido</h3>
+      <p>Actualiza el valor o la URL del mapa:</p>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <input id="editarPedidoValor" type="text" inputmode="numeric" placeholder="Valor del pedido (solo números)" style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px;">
+        <input id="editarPedidoMapUrl" type="text" placeholder="URL del mapa" style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px;">
+      </div>
+      <div class="modal-no-entregado-actions" style="margin-top: 12px;">
+        <button class="btn-primary" onclick="guardarEdicionPedido()">Guardar cambios</button>
+      </div>
+      <button class="modal-no-entregado-close" onclick="cerrarModalEditarPedido()">Cerrar</button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  return modal;
+}
+
+function cerrarModalEditarPedido() {
+  const modal = document.getElementById('modalEditarPedido');
+  if (!modal) return;
+  modal.style.display = 'none';
+  edicionPedidoPendiente = { index: null };
+}
+
+function guardarEdicionPedido() {
+  const { index } = edicionPedidoPendiente;
   const pedido = pedidos[index];
-  if (!pedido) return;
-
-  const valorActual = parseInt(pedido.valor || 0).toLocaleString('es-CO');
-  const nuevoValor = prompt(`Valor actual: $${valorActual}\n\nIngresa el nuevo valor (solo números):`, pedido.valor || '0');
-
-  if (nuevoValor !== null) {
-    const valorLimpio = nuevoValor.replace(/[^\d]/g, '');
-    if (valorLimpio !== '') {
-      pedido.valor = valorLimpio;
-    }
+  if (!pedido) {
+    cerrarModalEditarPedido();
+    return;
   }
 
-  const nuevaUrl = prompt(`URL Maps actual:\n${pedido.mapUrl || '(vacía)'}\n\nIngresa la nueva URL de Google Maps (dejar vacío para no cambiar):`, pedido.mapUrl || '');
+  const inputValor = document.getElementById('editarPedidoValor');
+  const inputMapUrl = document.getElementById('editarPedidoMapUrl');
+  const valorIngresado = inputValor ? String(inputValor.value || '') : '';
+  const valorLimpio = valorIngresado.replace(/[^\d]/g, '');
+  const nuevaUrl = inputMapUrl ? String(inputMapUrl.value || '').trim() : '';
 
-  if (nuevaUrl !== null && nuevaUrl.trim() !== pedido.mapUrl) {
-    pedido.mapUrl = nuevaUrl.trim();
+  if (valorLimpio !== '') {
+    pedido.valor = valorLimpio;
+  }
+  if (nuevaUrl !== '') {
+    pedido.mapUrl = nuevaUrl;
   }
 
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
+  cerrarModalEditarPedido();
+}
+
+function editarPedido(index) {
+  const pedido = pedidos[index];
+  if (!pedido) return;
+  edicionPedidoPendiente = { index };
+  const modal = asegurarModalEditarPedido();
+  const inputValor = document.getElementById('editarPedidoValor');
+  const inputMapUrl = document.getElementById('editarPedidoMapUrl');
+  if (inputValor) inputValor.value = String(pedido.valor || '');
+  if (inputMapUrl) inputMapUrl.value = String(pedido.mapUrl || '');
+  modal.style.display = 'flex';
 }
 
 // --- Comunicación ---
 
 function llamar(numero) {
-  if (!numero) { alert("No hay número de teléfono disponible"); return; }
+  if (!numero) { mostrarAvisoEnApp('No hay número de teléfono disponible', 'Contacto'); return; }
   const n = numero.toString().replace(/\D/g, '');
   if (!n) { alert("Número de teléfono inválido"); return; }
   window.location.href = `tel:${n}`;
@@ -841,7 +1057,7 @@ function copiarDireccionPedido(index) {
 }
 
 function whatsappLlamar(numero) {
-  if (!numero) { alert("No hay número de teléfono disponible"); return; }
+  if (!numero) { mostrarAvisoEnApp('No hay número de teléfono disponible', 'Contacto'); return; }
   const n = numero.toString().replace(/\D/g, '');
   if (!n) { alert("Número de teléfono inválido"); return; }
   const wa = n.startsWith('57') ? n : `57${n}`;
@@ -849,7 +1065,7 @@ function whatsappLlamar(numero) {
 }
 
 function whatsappMensaje(numero) {
-  if (!numero) { alert("No hay número de teléfono disponible"); return; }
+  if (!numero) { mostrarAvisoEnApp('No hay número de teléfono disponible', 'Contacto'); return; }
   const n = numero.toString().replace(/\D/g, '');
   if (!n) { alert("Número de teléfono inválido"); return; }
   const wa = n.startsWith('57') ? n : `57${n}`;
@@ -872,6 +1088,18 @@ function soporteLlamadaNormal() {
 
 let soportePendiente = { index: null };
 let decisionPendiente = { onConfirmar: null, onSecundario: null, onCancelar: null };
+
+function mostrarAvisoEnApp(texto, titulo = 'Aviso') {
+  mostrarModalDecision({
+    titulo,
+    texto,
+    mostrarConfirmar: false,
+    mostrarSecundario: false,
+    textoCancelar: 'Cerrar',
+    onConfirmar: () => {},
+    onCancelar: () => {}
+  });
+}
 
 function asegurarModalMensajeSoporte() {
   let modal = document.getElementById('modalMensajeSoporte');
@@ -1021,6 +1249,7 @@ function mostrarModalDecision(opciones) {
   if (btnConfirmar) {
     btnConfirmar.textContent = opciones.textoConfirmar || 'Aceptar';
     btnConfirmar.className = opciones.claseConfirmar || 'btn-primary';
+    btnConfirmar.style.display = opciones.mostrarConfirmar === false ? 'none' : 'inline-block';
   }
   if (btnSecundario) {
     btnSecundario.textContent = opciones.textoSecundario || 'Opción 2';
@@ -1047,7 +1276,7 @@ function cerrarModalDecision() {
 
 // --- Fotos / WhatsApp Admin ---
 
-let pagoEntregadoPendiente = { index: null, pedidoId: null };
+let pagoEntregadoPendiente = { index: null, pedidoId: null, enviarWhatsAppAdmin: true };
 
 function parseMontoEntero(valor) {
   const limpio = String(valor || '').replace(/[^\d]/g, '');
@@ -1097,7 +1326,7 @@ function cerrarModalPagoEntregado() {
 }
 
 function fotoEntregado(index, pedidoId) {
-  pagoEntregadoPendiente = { index, pedidoId };
+  pagoEntregadoPendiente = { index, pedidoId, enviarWhatsAppAdmin: true };
   const modal = asegurarModalPagoEntregado();
   modal.style.display = 'flex';
 }
@@ -1132,8 +1361,12 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
 Monto recibido: $${montoRecibido.toLocaleString('es-CO')}
 Producto(s) entregado(s): ${productosEntregados}
 Método de pago: ${metodoPagoTexto}`;
-  window.open(`https://wa.me/${numeroAdmin}?text=${encodeURIComponent(mensaje)}`, '_blank');
+  if (pagoEntregadoPendiente.enviarWhatsAppAdmin !== false) {
+    abrirWhatsAppConTexto(numeroAdmin, mensaje);
+  }
+  pagoEntregadoPendiente = { index: null, pedidoId: null, enviarWhatsAppAdmin: true };
   marcarEntregado(indexFinal);
+  notificarSiguientePedido(pedidoId);
 }
 
 function seleccionarMetodoPagoEntregado(metodo) {
@@ -1258,10 +1491,11 @@ function procesarFotoNoEntregado(index, pedidoId, enUbicacion) {
 
   const numeroAdmin = '573143473582';
   const mensaje = `Pedido #${pedidoId} no entregado`;
-  window.open(`https://wa.me/${numeroAdmin}?text=${encodeURIComponent(mensaje)}`, '_blank');
+  abrirWhatsAppConTexto(numeroAdmin, mensaje);
 
   pedido.entregado = true;
   pedido.enCurso = false;
+  pedido.llegoDestino = false;
   pedido.posicionPendiente = null;
   pedido.noEntregado = true;
   pedido.envioRecogido = enUbicacion;
@@ -1297,6 +1531,61 @@ function obtenerPedidoPorId(pedidoId) {
   return { pedido: null, indexActual: -1 };
 }
 
+function obtenerEtapaPedidoUI(pedido) {
+  if (pedido.cancelado) return 'cancelado';
+  if (pedido.entregado) return 'finalizado';
+  if (!pedido.notificadoEnCamino) return 'notificar';
+  if (!pedido.enCurso) return 'enrutar';
+  if (!pedido.llegoDestino) return 'enRuta';
+  return 'enDestino';
+}
+
+function abrirNavegacionConSelector(index, pedidoId) {
+  const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
+  const indexFinal = indexActual >= 0 ? indexActual : index;
+  const pedidoFinal = pedido || pedidos[indexFinal];
+  if (!pedidoFinal) return;
+
+  const u = getUbicacionPedido(indexFinal, pedidoId);
+  if (!u) { alert('No hay ubicación disponible para este pedido.'); return; }
+  marcarEnCurso(indexFinal);
+
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  if (isAndroid) {
+    if (u.lat != null && u.lng != null) {
+      const etiqueta = encodeURIComponent(`Pedido ${pedidoId}`);
+      window.location.href = `geo:${u.lat},${u.lng}?q=${u.lat},${u.lng}(${etiqueta})`;
+    } else {
+      const destino = encodeURIComponent(u.direccion || '');
+      window.location.href = `geo:0,0?q=${destino}`;
+    }
+    return;
+  }
+
+  if (isIOS) {
+    if (u.lat != null && u.lng != null) {
+      window.location.href = `maps://?daddr=${u.lat},${u.lng}&dirflg=d`;
+    } else {
+      const destino = encodeURIComponent(u.direccion || '');
+      window.location.href = `maps://?daddr=${destino}&dirflg=d`;
+    }
+    return;
+  }
+
+  if (u.lat != null && u.lng != null) {
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${u.lat},${u.lng}&travelmode=driving`, '_blank');
+  } else {
+    const destino = encodeURIComponent(u.direccion || '');
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${destino}&travelmode=driving`, '_blank');
+  }
+}
+
+function enrutarConApps(index, pedidoId) {
+  manejarNavegacionConNotificacion(index, pedidoId, 'apps');
+}
+
 function abrirNavegacion(tipo, index, pedidoId) {
   const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
   const indexFinal = indexActual >= 0 ? indexActual : index;
@@ -1305,6 +1594,12 @@ function abrirNavegacion(tipo, index, pedidoId) {
 
   const u = getUbicacionPedido(indexFinal, pedidoId);
   if (!u) { alert('No hay ubicación disponible para este pedido.'); return; }
+
+  if (tipo === 'apps') {
+    abrirNavegacionConSelector(indexFinal, pedidoId);
+    return;
+  }
+
   marcarEnCurso(indexFinal);
 
   if (tipo === 'waze') {
@@ -1383,9 +1678,135 @@ function enrutarConWaze(index, pedidoId) {
   manejarNavegacionConNotificacion(index, pedidoId, 'waze');
 }
 
+function marcarLlegueDestino(index, pedidoId) {
+  const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
+  const indexFinal = indexActual >= 0 ? indexActual : index;
+  const pedidoFinal = pedido || pedidos[indexFinal];
+  if (!pedidoFinal || pedidoFinal.entregado || pedidoFinal.cancelado || !pedidoFinal.enCurso) return;
+  pedidoFinal.llegoDestino = true;
+  guardarPedidos();
+  renderPedidos();
+}
+
+let finalizacionPendiente = { index: null, pedidoId: null };
+
+function asegurarModalFinalizacionEntrega() {
+  let modal = document.getElementById('modalFinalizacionEntrega');
+  if (modal) return modal;
+
+  modal = document.createElement('div');
+  modal.id = 'modalFinalizacionEntrega';
+  modal.className = 'modal-no-entregado-backdrop';
+  modal.innerHTML = `
+    <div class="modal-no-entregado-card">
+      <h3>Finalizar entrega</h3>
+      <p>Selecciona cómo quieres finalizar este pedido:</p>
+      <div class="modal-no-entregado-actions">
+        <button class="btn-camera" onclick="finalizarEntregaConResultado('foto_entrega')">Foto de entrega</button>
+        <button class="btn-warning" onclick="finalizarEntregaConResultado('foto_no_entregado')">Foto no entregado</button>
+        <button class="btn-info" onclick="finalizarEntregaConResultado('sin_foto')">Sin foto</button>
+      </div>
+      <button class="modal-no-entregado-close" onclick="cerrarModalFinalizacionEntrega()">Cerrar</button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  return modal;
+}
+
+function mostrarOpcionesFinalizarEntrega(index, pedidoId) {
+  finalizacionPendiente = { index, pedidoId };
+  const modal = asegurarModalFinalizacionEntrega();
+  modal.style.display = 'flex';
+}
+
+function cerrarModalFinalizacionEntrega() {
+  const modal = document.getElementById('modalFinalizacionEntrega');
+  if (!modal) return;
+  modal.style.display = 'none';
+}
+
+function obtenerSiguientePedidoActivo(excluirPedidoId) {
+  return pedidos.find(p => !p.cancelado && !p.entregado && p.id !== excluirPedidoId) || null;
+}
+
+function notificarSiguientePedido(excluirPedidoId) {
+  const siguiente = obtenerSiguientePedidoActivo(excluirPedidoId);
+  if (!siguiente) return;
+  const indexSiguiente = pedidos.findIndex(p => p.id === siguiente.id);
+  if (indexSiguiente < 0) return;
+
+  mostrarModalDecision({
+    titulo: 'Siguiente entrega',
+    texto: `Tu siguiente pedido a entregar es el ${siguiente.id}.`,
+    textoConfirmar: 'Notificar al cliente',
+    claseConfirmar: 'btn-notify',
+    mostrarSecundario: false,
+    textoCancelar: 'Cerrar',
+    onConfirmar: () => notificarEnCamino(indexSiguiente, siguiente.id, {
+      onSuccess: () => {
+        mostrarModalDecision({
+          titulo: 'Pedido notificado',
+          texto: `El pedido #${siguiente.id} fue notificado.\n¿Quieres enrutar ahora?`,
+          textoConfirmar: 'Enrutar',
+          claseConfirmar: 'btn-route',
+          mostrarSecundario: false,
+          textoCancelar: 'Cerrar',
+          onConfirmar: () => enrutarConApps(indexSiguiente, siguiente.id),
+          onCancelar: () => {}
+        });
+      }
+    }),
+    onCancelar: () => {}
+  });
+}
+
+function finalizarEntregaConResultado(tipoFinalizacion) {
+  const { index, pedidoId } = finalizacionPendiente;
+  cerrarModalFinalizacionEntrega();
+  const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
+  const indexFinal = indexActual >= 0 ? indexActual : index;
+  const pedidoFinal = pedido || pedidos[indexFinal];
+  if (!pedidoFinal) return;
+
+  if (tipoFinalizacion === 'foto_entrega') {
+    fotoEntregado(indexFinal, pedidoId);
+    return;
+  }
+
+  if (tipoFinalizacion === 'sin_foto') {
+    pagoEntregadoPendiente = { index: indexFinal, pedidoId, enviarWhatsAppAdmin: false };
+    const modalPago = asegurarModalPagoEntregado();
+    modalPago.style.display = 'flex';
+    return;
+  }
+
+  const numeroAdmin = '573143473582';
+  if (tipoFinalizacion === 'foto_no_entregado') {
+    const mensajeNoEntrega = `Pedido #${pedidoId} no entregado`;
+    window.open(`https://wa.me/${numeroAdmin}?text=${encodeURIComponent(mensajeNoEntrega)}`, '_blank');
+    pedidoFinal.noEntregado = true;
+    pedidoFinal.envioRecogido = true;
+  } else {
+    pedidoFinal.noEntregado = false;
+    pedidoFinal.envioRecogido = false;
+  }
+
+  pedidoFinal.entregado = true;
+  pedidoFinal.enCurso = false;
+  pedidoFinal.llegoDestino = false;
+  pedidoFinal.posicionPendiente = null;
+
+  guardarPedidos();
+  renderPedidos();
+  actualizarMarcadores();
+  notificarSiguientePedido(pedidoId);
+}
+
 // --- Notificar en camino ---
 
 function notificarEnCamino(index, pedidoId, opciones = {}) {
+  // Si el panel de configuración está visible, sincroniza antes de armar el mensaje.
+  guardarConfigNotificacionDesdeUI(false);
   const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
   const indexFinal = indexActual >= 0 ? indexActual : index;
   const pedidoFinal = pedido || pedidos[indexFinal];
@@ -1404,11 +1825,12 @@ function notificarEnCamino(index, pedidoId, opciones = {}) {
     return;
   }
   const telefonoCliente = pedidoFinal.telefono ? String(pedidoFinal.telefono).replace(/\D/g, '') : '';
-  if (!telefonoCliente) { alert('No hay número de teléfono del cliente disponible'); return; }
+  if (!telefonoCliente) { mostrarAvisoEnApp('No hay número de teléfono del cliente disponible', 'Notificación'); return; }
 
   const nombre = pedidoFinal.nombre || 'cliente';
   const precio = parseInt(pedidoFinal.valor || 0, 10).toLocaleString('es-CO');
   const wa = telefonoCliente.startsWith('57') ? telefonoCliente : `57${telefonoCliente}`;
+  const bloquePago = construirBloquePagoNotificacion();
 
   const mensaje = `Hola ${nombre}
 
@@ -1419,13 +1841,11 @@ Por favor ten en cuenta:
 - El repartidor NO CUENTA CON CAMBIO
 - El tiempo de espera desde la llegada al punto de entrega es de 10 minutos
 
-Si deseas pagar por Nequi o Daviplata, el número es: 3143645061
-Aparecerá como Mic**** Por*******
-O si gustas puedes pagar por Bre-B con la llave: @NEQUIMIC7057
+${bloquePago}
 
 Gracias por tu compra ${nombre}`;
 
-  window.open(`https://wa.me/${wa}?text=${encodeURIComponent(mensaje)}`, '_blank');
+  abrirWhatsAppConTexto(wa, mensaje);
   pedidoFinal.notificadoEnCamino = true;
   guardarPedidos();
   renderPedidos();
@@ -1662,7 +2082,7 @@ function compactarPedidos() {
     p.direccion || '',
     p.valor || '0',
     p.mapUrl || '',
-    (p.entregado ? 1 : 0) | (p.noEntregado ? 2 : 0) | (p.envioRecogido ? 4 : 0) | (p.enCurso ? 8 : 0) | (p.notificadoEnCamino ? 16 : 0) | (p.cancelado ? 32 : 0),
+    (p.entregado ? 1 : 0) | (p.noEntregado ? 2 : 0) | (p.envioRecogido ? 4 : 0) | (p.enCurso ? 8 : 0) | (p.notificadoEnCamino ? 16 : 0) | (p.cancelado ? 32 : 0) | (p.llegoDestino ? 64 : 0),
     (p.productos || []).join('|'),
     (p.coords && Number.isFinite(p.coords.lat) && Number.isFinite(p.coords.lng))
       ? `${p.coords.lat},${p.coords.lng}`
@@ -1690,7 +2110,7 @@ function descompactarPedidos(arr) {
     return ({
     id: c[0], nombre: c[1], telefono: c[2], direccion: c[3],
     valor: c[4], mapUrl: c[5],
-    entregado: !!(c[6] & 1), noEntregado: !!(c[6] & 2), envioRecogido: !!(c[6] & 4), enCurso: !!(c[6] & 8), notificadoEnCamino: !!(c[6] & 16), cancelado: !!(c[6] & 32),
+    entregado: !!(c[6] & 1), noEntregado: !!(c[6] & 2), envioRecogido: !!(c[6] & 4), enCurso: !!(c[6] & 8), notificadoEnCamino: !!(c[6] & 16), cancelado: !!(c[6] & 32), llegoDestino: !!(c[6] & 64),
     productos: c[7] ? c[7].split('|') : [], textoOriginal: '', coords,
     posicionPendiente: Number.isInteger(Number(c[9])) ? Number(c[9]) : null,
     metodoPagoEntrega: c[10] || '',
@@ -1792,6 +2212,7 @@ async function aplicarImportacion() {
       if (!p.hasOwnProperty('envioRecogido')) p.envioRecogido = false;
       if (!p.hasOwnProperty('notificadoEnCamino')) p.notificadoEnCamino = false;
       if (!p.hasOwnProperty('cancelado')) p.cancelado = false;
+      if (!p.hasOwnProperty('llegoDestino')) p.llegoDestino = false;
       if (!p.hasOwnProperty('metodoPagoEntrega')) p.metodoPagoEntrega = '';
       if (!p.hasOwnProperty('montoNequi')) p.montoNequi = 0;
       if (!p.hasOwnProperty('montoDaviplata')) p.montoDaviplata = 0;
@@ -1879,12 +2300,14 @@ window.onload = function () {
     if (!p.hasOwnProperty('envioRecogido')) p.envioRecogido = false;
     if (!p.hasOwnProperty('notificadoEnCamino')) p.notificadoEnCamino = false;
     if (!p.hasOwnProperty('cancelado')) p.cancelado = false;
+    if (!p.hasOwnProperty('llegoDestino')) p.llegoDestino = false;
     if (!p.hasOwnProperty('metodoPagoEntrega')) p.metodoPagoEntrega = '';
     if (!p.hasOwnProperty('montoNequi')) p.montoNequi = 0;
     if (!p.hasOwnProperty('montoDaviplata')) p.montoDaviplata = 0;
     if (!p.hasOwnProperty('montoEfectivo')) p.montoEfectivo = 0;
     if (p.entregado) {
       p.enCurso = false;
+      p.llegoDestino = false;
       p.posicionPendiente = null;
     }
     if (p.coords && (!Number.isFinite(Number(p.coords.lat)) || !Number.isFinite(Number(p.coords.lng)))) {
@@ -1895,6 +2318,7 @@ window.onload = function () {
     return p;
   });
   guardarPedidos();
+  cargarConfigNotificacionEnUI();
 
   if (pedidos.length > 0) {
     nextPedidoId = Math.max(...pedidos.map(p => p.id)) + 1;

@@ -38,6 +38,36 @@
 
   <div class="section">
     <h2>Pegar Formato de Pedido</h2>
+    <details class="configuracion-notificacion">
+      <summary><i class="fa-solid fa-sliders"></i> Configurar medios de pago en notificación</summary>
+      <div class="configuracion-notificacion-body">
+        <div class="config-check-row">
+          <label class="config-check">
+            <input type="checkbox" id="cfgTieneNequi">
+            Tengo Nequi
+          </label>
+          <label class="config-check">
+            <input type="checkbox" id="cfgTieneDaviplata">
+            Tengo Daviplata
+          </label>
+        </div>
+        <div id="cfgNumeroDigitalWrap">
+          <label for="cfgNumeroDigital">Número para Nequi y Daviplata</label>
+          <input type="text" id="cfgNumeroDigital" inputmode="numeric" placeholder="Ej: 3143645061">
+        </div>
+
+        <label class="config-check">
+          <input type="checkbox" id="cfgTieneLlave">
+          Tengo Bre-B
+        </label>
+        <div id="cfgLlaveWrap">
+          <label for="cfgLlavePago">Bre-B</label>
+          <input type="text" id="cfgLlavePago" placeholder="Ej: @NEQUIMIC7057">
+        </div>
+
+        <button class="btn-primary" type="button" onclick="guardarConfigNotificacionDesdeUI()">Guardar configuración</button>
+      </div>
+    </details>
     <textarea id="textoPedido" placeholder="Pega aquí el formato del pedido (incluye el enlace de Maps)..."></textarea>
     <br><br>
     <button class="btn-primary" onclick="procesarPedido()">Procesar Pedido</button>
@@ -72,7 +102,7 @@
     </div>
     <div class="pedidos-tabs" id="pedidosTabs">
       <button class="pedidos-tab active" onclick="cambiarVistaPedidos('pendientes')"><i class="fa-regular fa-clock"></i> Pendientes</button>
-      <button class="pedidos-tab" onclick="cambiarVistaPedidos('enCurso')"><i class="fa-solid fa-truck-fast"></i> En curso</button>
+      <button class="pedidos-tab" onclick="cambiarVistaPedidos('enCurso')"><i class="fa-solid fa-truck-fast"></i> En ruta</button>
       <button class="pedidos-tab" onclick="cambiarVistaPedidos('entregados')"><i class="fa-solid fa-circle-check"></i> Finalizados</button>
       <button class="pedidos-tab" onclick="cambiarVistaPedidos('cancelados')"><i class="fa-solid fa-ban"></i> Cancelados</button>
     </div>
