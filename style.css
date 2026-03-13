@@ -779,9 +779,9 @@ button i,
 }
 
 .configuracion-notificacion-body .btn-primary {
-  width: fit-content;
-  min-width: 180px;
-  align-self: flex-start;
+  width: 100%;
+  min-width: 0;
+  align-self: stretch;
 }
 
 .configuracion-notificacion-body label {

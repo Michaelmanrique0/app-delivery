@@ -75,11 +75,10 @@ function cargarConfigNotificacionEnUI() {
   [tieneNequi, tieneDaviplata, tieneLlave].forEach((el) => {
     el.onchange = () => {
       actualizarVisibilidadConfigNotificacion();
-      guardarConfigNotificacionDesdeUI(false);
     };
   });
-  if (numeroDigital) numeroDigital.onchange = () => guardarConfigNotificacionDesdeUI(false);
-  if (llavePago) llavePago.onchange = () => guardarConfigNotificacionDesdeUI(false);
+  if (numeroDigital) numeroDigital.onchange = () => {};
+  if (llavePago) llavePago.onchange = () => {};
   actualizarVisibilidadConfigNotificacion();
 }
 
@@ -91,6 +90,8 @@ function abrirConfigNotificacion() {
 }
 
 function cerrarConfigNotificacion() {
+  // Descarta cambios no guardados y restaura lo persistido
+  cargarConfigNotificacionEnUI();
   const modal = document.getElementById('modalConfigNotificacion');
   if (!modal) return;
   modal.style.display = 'none';
@@ -1817,8 +1818,6 @@ function finalizarEntregaConResultado(tipoFinalizacion) {
 // --- Notificar en camino ---
 
 function notificarEnCamino(index, pedidoId, opciones = {}) {
-  // Si el panel de configuración está visible, sincroniza antes de armar el mensaje.
-  guardarConfigNotificacionDesdeUI(false);
   const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
   const indexFinal = indexActual >= 0 ? indexActual : index;
   const pedidoFinal = pedido || pedidos[indexFinal];
