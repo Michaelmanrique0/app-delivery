@@ -573,11 +573,18 @@ function renderPedidos() {
     lista.appendChild(crearSeccionPedidos('seccion-pendientes', pendientes, 'No hay pedidos pendientes'));
   }
 
-  const recogidoDelDia = pedidos.filter(p => p.entregado && !p.noEntregado).reduce((sum, p) => sum + parseInt(p.valor || 0, 10), 0);
+  const recogidoDelDia = pedidos
+    .filter(
+      p => p.entregado
+        && !p.noEntregado
+        && p.metodoPagoEntrega !== 'pagado_tienda'
+        && p.metodoPagoEntrega !== 'es_cambio'
+    )
+    .reduce((sum, p) => sum + parseInt(p.valor || 0, 10), 0);
   const enviosEntregados = pedidos.filter(p => p.entregado && !p.noEntregado).length;
   const enviosNoEntregadosEnPunto = pedidos.filter(p => p.noEntregado && p.envioRecogido).length;
   const pagoDomiciliario = (enviosEntregados + enviosNoEntregadosEnPunto) * 12000;
-  const entregarTienda = recogidoDelDia - pagoDomiciliario;
+  const entregarTienda = Math.max(recogidoDelDia - pagoDomiciliario, 0);
   const totalPagadoNequi = pedidos
     .filter(p => p.entregado && !p.noEntregado)
     .reduce((sum, p) => sum + Number(p.montoNequi || 0), 0);
@@ -668,6 +675,9 @@ function crearTarjetaPedido(pedido, index) {
   const btnEnrutarHtml = etapaActual === 'enrutar'
     ? `<button class="btn-route" onclick="enrutarConApps(${index}, ${pedido.id})"><i class="fa-solid fa-route"></i> Enrutar</button>`
     : '';
+  const btnEnrutarNuevamenteHtml = etapaActual === 'enRuta'
+    ? `<button class="btn-route" onclick="enrutarConApps(${index}, ${pedido.id})"><i class="fa-solid fa-route"></i> Enrutar nuevamente</button>`
+    : '';
   const btnLlegueDestinoHtml = etapaActual === 'enRuta'
     ? `<button class="btn-primary" onclick="marcarLlegueDestino(${index}, ${pedido.id})"><i class="fa-solid fa-flag-checkered"></i> Llegué al destino</button>`
     : '';
@@ -724,6 +734,7 @@ function crearTarjetaPedido(pedido, index) {
       ${btnNotificarHtml ? `<div class="pedido-actions-row">${btnNotificarHtml}</div>` : ''}
       ${btnNotificarNuevamenteHtml ? `<div class="pedido-actions-row">${btnNotificarNuevamenteHtml}</div>` : ''}
       ${btnEnrutarHtml ? `<div class="pedido-actions-row">${btnEnrutarHtml}</div>` : ''}
+      ${btnEnrutarNuevamenteHtml ? `<div class="pedido-actions-row">${btnEnrutarNuevamenteHtml}</div>` : ''}
       ${btnLlegueDestinoHtml ? `<div class="pedido-actions-row">${btnLlegueDestinoHtml}</div>` : ''}
       ${bloqueAccionesDestinoHtml}
       ${btnRegresarPendienteHtml ? `<div class="pedido-actions-row">${btnRegresarPendienteHtml}</div>` : ''}
@@ -1313,6 +1324,8 @@ function asegurarModalPagoEntregado() {
         <button class="btn-route" onclick="seleccionarMetodoPagoEntregado('daviplata')">Daviplata</button>
         <button class="btn-success" onclick="seleccionarMetodoPagoEntregado('nequi_efectivo')">Nequi + Efectivo</button>
         <button class="btn-route" onclick="seleccionarMetodoPagoEntregado('daviplata_efectivo')">Daviplata + Efectivo</button>
+        <button class="btn-warning" onclick="seleccionarMetodoPagoEntregado('pagado_tienda')">Ya se pagó a la tienda</button>
+        <button class="btn-info" onclick="seleccionarMetodoPagoEntregado('es_cambio')">Es un cambio</button>
       </div>
       <div id="montosMixtosPago" style="display:none; margin-top: 12px;">
         <input id="montoDigitalPago" type="text" inputmode="numeric" placeholder="Monto digital" style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px; margin-bottom:8px;">
@@ -1369,9 +1382,14 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
   else if (pedido.metodoPagoEntrega === 'daviplata') metodoPagoTexto = 'Daviplata';
   else if (pedido.metodoPagoEntrega === 'nequi_efectivo') metodoPagoTexto = `Nequi + Efectivo (Nequi: $${pedido.montoNequi.toLocaleString('es-CO')}, Efectivo: $${pedido.montoEfectivo.toLocaleString('es-CO')})`;
   else if (pedido.metodoPagoEntrega === 'daviplata_efectivo') metodoPagoTexto = `Daviplata + Efectivo (Daviplata: $${pedido.montoDaviplata.toLocaleString('es-CO')}, Efectivo: $${pedido.montoEfectivo.toLocaleString('es-CO')})`;
+  else if (pedido.metodoPagoEntrega === 'pagado_tienda') metodoPagoTexto = 'Ya se pagó a la tienda';
+  else if (pedido.metodoPagoEntrega === 'es_cambio') metodoPagoTexto = 'Es un cambio';
 
+  const detalleMonto = (pedido.metodoPagoEntrega === 'pagado_tienda' || pedido.metodoPagoEntrega === 'es_cambio')
+    ? (pedido.metodoPagoEntrega === 'pagado_tienda' ? 'No aplica (ya se pagó a la tienda)' : 'No aplica (es un cambio)')
+    : `$${montoRecibido.toLocaleString('es-CO')}`;
   const mensaje = `Pedido #${pedidoId} entregado
-Monto recibido: $${montoRecibido.toLocaleString('es-CO')}
+Monto recibido: ${detalleMonto}
 Producto(s) entregado(s): ${productosEntregados}
 Método de pago: ${metodoPagoTexto}`;
   if (pagoEntregadoPendiente.enviarWhatsAppAdmin !== false) {
