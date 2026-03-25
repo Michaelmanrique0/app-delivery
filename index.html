@@ -6,83 +6,115 @@
 <title>Gestión de Pedidos - Delivery App</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
-<link rel="stylesheet" href="style.css?v=20260312b">
+<link rel="stylesheet" href="style.css?v=20260325b">
 </head>
 
 <body>
-<div class="container">
-  <h1>Gestión de Pedidos Delivery</h1>
+<div id="authScreen" class="auth-screen">
+  <p id="authBootMessage" class="auth-boot-message">Comprobando sesión…</p>
+  <div class="auth-card" id="authCard" style="display:none;">
+    <h1 class="auth-title">Delivery App</h1>
+    <p class="auth-subtitle">Entra o crea una cuenta</p>
+    <div class="auth-tabs">
+      <button type="button" class="auth-tab active" id="authTabLogin" onclick="mostrarTabAuth('login')">Entrar</button>
+      <button type="button" class="auth-tab" id="authTabRegistro" onclick="mostrarTabAuth('registro')">Registro</button>
+    </div>
+    <div id="authFormLogin" class="auth-form">
+      <label for="loginUsuario">Correo o usuario</label>
+      <input type="text" id="loginUsuario" autocomplete="username" placeholder="Correo o usuario de acceso">
+      <label for="loginPassword">Contraseña</label>
+      <input type="password" id="loginPassword" autocomplete="current-password" placeholder="Contraseña">
+      <p id="authErrorLogin" class="auth-error" style="display:none;"></p>
+      <button type="button" id="btnLoginEntrar" class="btn-primary auth-submit" onclick="iniciarSesion()">Entrar</button>
+    </div>
+    <div id="authFormRegistro" class="auth-form" style="display:none;">
+      <label for="regNombre">Nombre completo</label>
+      <input type="text" id="regNombre" autocomplete="name" placeholder="Tu nombre">
+      <label for="regEmail">Correo electrónico</label>
+      <input type="email" id="regEmail" autocomplete="email" placeholder="tu@correo.com">
+      <label for="regUsuario">Usuario</label>
+      <input type="text" id="regUsuario" autocomplete="username" placeholder="Elige un usuario (sin espacios)">
+      <label for="regPassword">Contraseña</label>
+      <input type="password" id="regPassword" autocomplete="new-password" placeholder="Mínimo 6 caracteres">
+      <p id="authErrorRegistro" class="auth-error" style="display:none;"></p>
+      <button type="button" class="btn-primary auth-submit" onclick="registrarUsuario()">Crear cuenta</button>
+    </div>
+  </div>
+</div>
 
-  <div class="section sync-section">
-    <h2>Sincronizar Datos</h2>
-    <div class="sync-buttons">
-      <button class="btn-sync" onclick="exportarDatos()"><i class="fa-solid fa-file-export"></i> Exportar Datos</button>
-      <button class="btn-sync" onclick="importarDatos()"><i class="fa-solid fa-file-import"></i> Importar Datos</button>
-      <button class="btn-sync" onclick="mostrarQR()"><i class="fa-solid fa-qrcode"></i> Mostrar QR</button>
-    </div>
-    <div class="sync-code-area" id="syncCodeArea" style="display: none;">
-      <textarea id="syncData" placeholder="Pega aquí el código de sincronización o escanea el QR..."></textarea>
-      <button class="btn-primary" onclick="aplicarImportacion()" style="margin-top: 10px; width: 100%;">Aplicar Datos</button>
-    </div>
-    <div class="qr-container" id="qrContainer" style="display: none;">
-      <h3>Escanea este código QR con tu celular:</h3>
-      <div id="qrCode"></div>
-      <div class="sync-info">
-        <strong>Instrucciones:</strong><br>
-        1. En el PC: Haz clic en "Exportar Datos"<br>
-        2. Copia el código o escanea el QR<br>
-        3. En el celular: Pega el código y haz clic en "Aplicar Datos"
+<div id="mainApp" class="container" style="display:none;" data-app-main>
+  <header class="app-header">
+    <div class="app-header-inner">
+      <h1 class="app-header-title">Gestión de Pedidos Delivery</h1>
+      <div class="app-header-menu-wrap">
+        <button type="button" id="btnMenuUsuario" class="btn-menu-hamburger" aria-expanded="false" aria-controls="menuUsuarioPanel" aria-label="Menú de cuenta" onclick="toggleMenuUsuario(event)">
+          <i class="fa-solid fa-bars" aria-hidden="true"></i>
+        </button>
+        <div id="menuUsuarioPanel" class="menu-usuario-panel" style="display:none;" role="menu">
+          <div class="menu-usuario-identidad">
+            <span id="headerUserNombre" class="header-user-nombre"></span>
+            <span id="headerUserRol" class="header-user-rol"></span>
+          </div>
+          <button type="button" id="btnMediosPagoMenu" class="menu-usuario-accion" role="menuitem" onclick="abrirConfigNotificacionDesdeMenu()"><i class="fa-solid fa-sliders"></i> Medios de pago (notificación al cliente)</button>
+          <button type="button" class="menu-usuario-salir" role="menuitem" onclick="cerrarSesion()"><i class="fa-solid fa-right-from-bracket"></i> Salir</button>
+        </div>
       </div>
+    </div>
+  </header>
+
+  <div id="modalConfigNotificacion" class="modal-no-entregado-backdrop">
+    <div class="modal-no-entregado-card configuracion-notificacion-panel">
+      <h3>Medios de pago en la notificación al cliente</h3>
+      <p class="config-notificacion-ayuda">Estos datos se incluyen en el mensaje de WhatsApp cuando notificas al cliente (Nequi, Daviplata, Bre-B).</p>
+      <div class="configuracion-notificacion-body">
+        <div class="config-check-row">
+          <label class="config-check">
+            <input type="checkbox" id="cfgTieneNequi">
+            Tengo Nequi
+          </label>
+          <label class="config-check">
+            <input type="checkbox" id="cfgTieneDaviplata">
+            Tengo Daviplata
+          </label>
+        </div>
+        <div id="cfgNumeroDigitalWrap">
+          <label for="cfgNumeroDigital">Número para Nequi y Daviplata</label>
+          <input type="text" id="cfgNumeroDigital" inputmode="numeric" placeholder="Ej: 3143645061">
+        </div>
+
+        <label class="config-check">
+          <input type="checkbox" id="cfgTieneLlave">
+          Tengo Bre-B
+        </label>
+        <div id="cfgLlaveWrap">
+          <label for="cfgLlavePago">Bre-B</label>
+          <input type="text" id="cfgLlavePago" placeholder="Ej: @NEQUIMIC7057">
+        </div>
+
+        <button class="btn-primary" type="button" onclick="guardarConfigNotificacionDesdeUI()">Guardar configuración</button>
+      </div>
+      <button class="modal-no-entregado-close" type="button" onclick="cerrarConfigNotificacion()">Cerrar</button>
     </div>
   </div>
 
-  <div class="section">
-    <h2>Pegar Formato de Pedido</h2>
-    <button id="btnConfigNotificacion" class="btn-info" type="button" onclick="abrirConfigNotificacion()">
-      <i class="fa-solid fa-sliders"></i> Configurar medios de pago en notificación
-    </button>
-    <div id="modalConfigNotificacion" class="modal-no-entregado-backdrop">
-      <div class="modal-no-entregado-card configuracion-notificacion-panel">
-        <h3>Configurar medios de pago en notificación</h3>
-        <div class="configuracion-notificacion-body">
-          <div class="config-check-row">
-            <label class="config-check">
-              <input type="checkbox" id="cfgTieneNequi">
-              Tengo Nequi
-            </label>
-            <label class="config-check">
-              <input type="checkbox" id="cfgTieneDaviplata">
-              Tengo Daviplata
-            </label>
-          </div>
-          <div id="cfgNumeroDigitalWrap">
-            <label for="cfgNumeroDigital">Número para Nequi y Daviplata</label>
-            <input type="text" id="cfgNumeroDigital" inputmode="numeric" placeholder="Ej: 3143645061">
-          </div>
-
-          <label class="config-check">
-            <input type="checkbox" id="cfgTieneLlave">
-            Tengo Bre-B
-          </label>
-          <div id="cfgLlaveWrap">
-            <label for="cfgLlavePago">Bre-B</label>
-            <input type="text" id="cfgLlavePago" placeholder="Ej: @NEQUIMIC7057">
-          </div>
-
-          <button class="btn-primary" type="button" onclick="guardarConfigNotificacionDesdeUI()">Guardar configuración</button>
-        </div>
-        <button class="modal-no-entregado-close" type="button" onclick="cerrarConfigNotificacion()">Cerrar</button>
-      </div>
-    </div>
-    <textarea id="textoPedido" placeholder="Pega aquí el formato del pedido (incluye el enlace de Maps)..."></textarea>
+  <div id="sectionPegarPedido" class="section section-pegar-pedidos">
+    <h2><i class="fa-brands fa-whatsapp" style="color:#25D366;"></i> Pegar formatos de pedido (WhatsApp)</h2>
+    <p class="section-pegar-ayuda">Pega aquí el texto tal como sale del chat (con hora, nombre de la tienda y líneas sueltas). Puedes pegar <strong>un solo pedido</strong> o <strong>varios</strong> seguidos (cada uno con &ldquo;¿Todo en orden?&rdquo;). El enlace de Google Maps puede ir en una línea aparte; se detecta igual.</p>
+    <textarea id="textoPedido" class="textarea-pedidos-chat" placeholder="Ejemplo: líneas con [hora] Tienda: …, enlace maps.google.com en otra línea, bloque &quot;Para agilizar tu pedido…&quot; con 📍 🙋 📲 💰 y producto. Varios pedidos: uno tras otro."></textarea>
     <br><br>
-    <button class="btn-primary" onclick="procesarPedido()">Procesar Pedido</button>
+    <button type="button" id="btnProcesarPedido" class="btn-primary" onclick="procesarPedido()">Procesar pedido(s)</button>
+  </div>
+
+  <div id="panelAdmin" class="section admin-panel" style="display:none;">
+    <h2>Usuarios registrados</h2>
+    <p class="admin-usuarios-ayuda">El primer usuario en la base de datos es administrador. Aquí puedes asignar rol de repartidor o admin.</p>
+    <div id="listaUsuariosAdmin" class="admin-usuarios-lista"></div>
   </div>
 
   <div class="section">
     <div class="actions-bar">
       <h2 style="margin: 0; border: none; padding: 0;">Lista de Pedidos</h2>
-      <button class="btn-danger" onclick="eliminarTodos()"><i class="fa-solid fa-trash"></i> Eliminar Todos</button>
+      <button id="btnEliminarTodos" class="btn-danger" onclick="eliminarTodos()" style="display:none;"><i class="fa-solid fa-trash"></i> Eliminar Todos</button>
     </div>
     <div class="totales-resumen" id="totalesResumen" style="display: none;">
       <div class="total-item total-recogido-dia">
@@ -107,15 +139,15 @@
       </div>
     </div>
     <div class="pedidos-tabs" id="pedidosTabs">
-      <button class="pedidos-tab active" onclick="cambiarVistaPedidos('pendientes')"><i class="fa-regular fa-clock"></i> Pendientes</button>
-      <button class="pedidos-tab" onclick="cambiarVistaPedidos('enCurso')"><i class="fa-solid fa-truck-fast"></i> En ruta</button>
-      <button class="pedidos-tab" onclick="cambiarVistaPedidos('entregados')"><i class="fa-solid fa-circle-check"></i> Finalizados</button>
-      <button class="pedidos-tab" onclick="cambiarVistaPedidos('cancelados')"><i class="fa-solid fa-ban"></i> Cancelados</button>
+      <button type="button" class="pedidos-tab active" data-vista-pedidos="pendientes" onclick="cambiarVistaPedidos('pendientes')"><i class="fa-regular fa-clock"></i> Pendientes</button>
+      <button type="button" class="pedidos-tab" data-vista-pedidos="enCurso" hidden onclick="cambiarVistaPedidos('enCurso')"><i class="fa-solid fa-truck-fast"></i> En ruta</button>
+      <button type="button" class="pedidos-tab" data-vista-pedidos="entregados" hidden onclick="cambiarVistaPedidos('entregados')"><i class="fa-solid fa-circle-check"></i> Finalizados</button>
+      <button type="button" class="pedidos-tab" data-vista-pedidos="cancelados" hidden onclick="cambiarVistaPedidos('cancelados')"><i class="fa-solid fa-ban"></i> Cancelados</button>
     </div>
     <div id="listaPedidos">
       <div class="empty-state" id="emptyState">
         <p>No hay pedidos aún</p>
-        <p style="font-size: 14px;">Pega un formato de pedido arriba para comenzar</p>
+        <p style="font-size: 14px;">Los pedidos aparecerán aquí cuando el administrador los cree y te asigne.</p>
       </div>
     </div>
   </div>
@@ -133,8 +165,9 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.1/dist/umd/supabase.min.js"></script>
+<script src="supabase-config.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="app.js?v=20260312b"></script>
+<script src="app.js?v=20260325al"></script>
 </body>
 </html>

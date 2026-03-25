@@ -1,4 +1,98 @@
-let pedidos = JSON.parse(localStorage.getItem("pedidos")) || [];
+let pedidos = [];
+let supabaseCliente = null;
+let sesionActiva = null;
+let perfilUsuario = null;
+let usuariosRegistrados = [];
+let persistTimeoutId = null;
+let canalRealtimePedidos = null;
+let recargaPedidosRealtimeTimer = null;
+let bootSesionEjecutando = false;
+let bootSesionCola = false;
+/** Evita doble boot si SIGNED_IN llega mientras iniciarSesion ya llama a bootSesionYDatos. */
+let enFlujoLoginManual = false;
+let refrescoPerfilEnCurso = false;
+let cargaUsuariosAdminEnCurso = false;
+let enSalidaDePagina = false;
+
+// Exponer estado mínimo para depuración desde consola (no incluye keys).
+function exponerDebugAppDelivery() {
+  try {
+    window.__appDelivery = {
+      get supabaseReady() { return !!supabaseCliente; },
+      get session() { return sesionActiva || null; },
+      get userId() { return sesionActiva?.user?.id; },
+      get profile() { return perfilUsuario || null; },
+      get esAdmin() { return esAdmin(); },
+      get esAdminVisual() { return esAdminVisual(); },
+      recargarPerfil: () => refrescarPerfilUsuario(),
+      recargarUsuariosAdmin: () => cargarUsuariosParaAdmin(),
+      recargarPedidos: () => cargarPedidosDesdeSupabase().then(() => renderPedidos()),
+    };
+  } catch (_e) {}
+}
+
+// Recuerda la última pantalla *por pestaña* (sessionStorage).
+// Requisito: si recargas estando en login, NO debe auto-entrar; si recargas dentro, debe seguir dentro.
+const SS_LAST_SCREEN_KEY = 'app_delivery_last_screen';
+const SS_ADMIN_USER_ID_KEY = 'app_delivery_admin_user_id';
+
+function ssGet(key) {
+  try { return window.sessionStorage ? window.sessionStorage.getItem(key) : null; } catch (_e) { return null; }
+}
+
+function ssSet(key, value) {
+  try { if (window.sessionStorage) window.sessionStorage.setItem(key, String(value)); } catch (_e) {}
+}
+
+function wasLoginScreenBeforeReload() {
+  // Por defecto (pestaña nueva) queremos quedarnos en login.
+  // Solo auto-entramos si esta pestaña estaba en "main" antes de recargar.
+  return ssGet(SS_LAST_SCREEN_KEY) !== 'main';
+}
+
+function marcarPantallaLogin() {
+  ssSet(SS_LAST_SCREEN_KEY, 'login');
+}
+
+function marcarPantallaMain() {
+  ssSet(SS_LAST_SCREEN_KEY, 'main');
+}
+
+function marcarHintAdminSesion(userId) {
+  if (!userId) return;
+  ssSet(SS_ADMIN_USER_ID_KEY, userId);
+}
+
+function limpiarHintAdminSesion() {
+  try { if (window.sessionStorage) window.sessionStorage.removeItem(SS_ADMIN_USER_ID_KEY); } catch (_e) {}
+}
+
+function aplicarHintAdminSesion() {
+  const uid = sesionActiva?.user?.id;
+  if (!uid) return false;
+  const hintUid = ssGet(SS_ADMIN_USER_ID_KEY);
+  if (hintUid !== uid) return false;
+  if (esAdmin()) return true;
+  const u = sesionActiva.user;
+  perfilUsuario = {
+    id: u.id,
+    email: u.email || '',
+    full_name: (u.user_metadata && u.user_metadata.full_name) || '',
+    role: 'admin',
+    created_at: null
+  };
+  return true;
+}
+
+function hayHintAdminSesionActual() {
+  const uid = sesionActiva?.user?.id;
+  if (!uid) return false;
+  return ssGet(SS_ADMIN_USER_ID_KEY) === uid;
+}
+
+function esAdminVisual() {
+  return esAdmin() || hayHintAdminSesionActual();
+}
 let mapa = null;
 let marcadores = [];
 let rutaLayer = null;
@@ -8,6 +102,8 @@ let vistaPedidosActual = 'pendientes';
 let vistaPedidosSeleccionadaManual = false;
 const TELEFONO_SOPORTE = '3213153165';
 const CONFIG_NOTIFICACION_KEY = 'configNotificacionPago';
+const CACHE_USUARIOS_ADMIN_KEY = 'cacheUsuariosAdmin_v1';
+const CACHE_PEDIDOS_KEY = 'cachePedidos_v1';
 const CONFIG_NOTIFICACION_DEFAULT = {
   tieneNequi: true,
   tieneDaviplata: true,
@@ -17,6 +113,31 @@ const CONFIG_NOTIFICACION_DEFAULT = {
 };
 
 let configNotificacionPago = cargarConfigNotificacionPago();
+
+function cargarCacheUsuariosAdmin() {
+  try {
+    const raw = localStorage.getItem(CACHE_USUARIOS_ADMIN_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((x) => x && x.id);
+  } catch (_e) {
+    return [];
+  }
+}
+
+function guardarCacheUsuariosAdmin() {
+  try {
+    const compact = (usuariosRegistrados || []).map((u) => ({
+      id: u.id,
+      email: u.email || '',
+      full_name: u.full_name || '',
+      role: u.role || '',
+      created_at: u.created_at || null
+    }));
+    localStorage.setItem(CACHE_USUARIOS_ADMIN_KEY, JSON.stringify(compact));
+  } catch (_e) {}
+}
 
 function cargarConfigNotificacionPago() {
   try {
@@ -45,6 +166,37 @@ function cargarConfigNotificacionPago() {
 
 function guardarConfigNotificacionPago() {
   localStorage.setItem(CONFIG_NOTIFICACION_KEY, JSON.stringify(configNotificacionPago));
+}
+
+function cargarCachePedidos() {
+  try {
+    const raw = localStorage.getItem(CACHE_PEDIDOS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed;
+  } catch (_e) {
+    return [];
+  }
+}
+
+function guardarCachePedidos() {
+  try {
+    const lista = Array.isArray(pedidos) ? pedidos : [];
+    const dedup = deduplicarPedidosPorId(lista);
+    localStorage.setItem(CACHE_PEDIDOS_KEY, JSON.stringify(dedup));
+  } catch (_e) {}
+}
+
+function deduplicarPedidosPorId(lista) {
+  const map = new Map();
+  (Array.isArray(lista) ? lista : []).forEach((p) => {
+    const id = p && p.id != null ? Number(p.id) : null;
+    if (!id || !Number.isFinite(id)) return;
+    // Último gana: si hay duplicado, conservamos el más reciente en el array.
+    map.set(id, p);
+  });
+  return Array.from(map.values()).sort((a, b) => Number(a.id) - Number(b.id));
 }
 
 function actualizarVisibilidadConfigNotificacion() {
@@ -83,6 +235,8 @@ function cargarConfigNotificacionEnUI() {
 }
 
 function abrirConfigNotificacion() {
+  // Admin no configura medios de pago para notificación del cliente.
+  if (esAdminVisual()) return;
   cargarConfigNotificacionEnUI();
   const modal = document.getElementById('modalConfigNotificacion');
   if (!modal) return;
@@ -97,7 +251,13 @@ function cerrarConfigNotificacion() {
   modal.style.display = 'none';
 }
 
+function abrirConfigNotificacionDesdeMenu() {
+  cerrarMenuUsuario();
+  abrirConfigNotificacion();
+}
+
 function guardarConfigNotificacionDesdeUI(mostrarMensaje = true) {
+  if (esAdminVisual()) return;
   const tieneNequi = document.getElementById('cfgTieneNequi');
   const tieneDaviplata = document.getElementById('cfgTieneDaviplata');
   const numeroDigital = document.getElementById('cfgNumeroDigital');
@@ -168,6 +328,1086 @@ function abrirWhatsAppConTexto(telefono, mensaje) {
   window.open(url, '_blank');
 }
 
+function esAdmin() {
+  if (!sesionActiva || !perfilUsuario) return false;
+  const r = String(perfilUsuario.role ?? '').toLowerCase().trim();
+  return r === 'admin';
+}
+
+function syncMainAdminClass() {
+  const mainAppEl = document.getElementById('mainApp');
+  const secPegar = document.getElementById('sectionPegarPedido');
+  const admin = esAdminVisual();
+  if (mainAppEl) {
+    mainAppEl.classList.toggle('app-es-admin', admin);
+  }
+  if (secPegar) {
+    secPegar.style.setProperty('display', admin ? 'block' : 'none', 'important');
+  }
+  if (esAdmin() && sesionActiva?.user?.id) {
+    marcarHintAdminSesion(sesionActiva.user.id);
+  }
+}
+
+// Supabase exige un email interno: si el usuario no escribe @, se usa un dominio reservado (.invalid).
+const DOMINIO_USUARIO_INTERNO = 'users.app-delivery.invalid';
+
+function emailDesdeCampoUsuario(usuarioRaw) {
+  const u = String(usuarioRaw || '').trim();
+  if (!u) return '';
+  if (u.includes('@')) return u.toLowerCase();
+  const slug = u
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (!slug) return '';
+  return `${slug}@${DOMINIO_USUARIO_INTERNO}`;
+}
+
+function usuarioLoginVisible(email) {
+  const mail = String(email || '');
+  const sufijo = `@${DOMINIO_USUARIO_INTERNO}`;
+  if (mail.endsWith(sufijo)) return mail.slice(0, -sufijo.length);
+  return mail;
+}
+
+function etiquetaUsuarioEnCabecera() {
+  if (!perfilUsuario) return '';
+  const nombre = (perfilUsuario.full_name || '').trim();
+  if (nombre) return nombre;
+  const mail = String(perfilUsuario.email || '');
+  if (mail.endsWith(`@${DOMINIO_USUARIO_INTERNO}`)) return usuarioLoginVisible(mail);
+  return 'Usuario';
+}
+
+/** Nombre del registro (metadata o perfil); nunca muestra un correo con @. */
+function nombreRegistradoDesdeAuthUser() {
+  const u = sesionActiva?.user;
+  if (!u) return '';
+  const meta = u.user_metadata;
+  const n = meta && typeof meta.full_name === 'string' ? meta.full_name.trim() : '';
+  if (n) return n;
+  const mail = String(u.email || '');
+  if (mail.endsWith(`@${DOMINIO_USUARIO_INTERNO}`)) return usuarioLoginVisible(mail);
+  return 'Usuario';
+}
+
+function nombreMetaSesion() {
+  const m = sesionActiva?.user?.user_metadata;
+  const n = m && typeof m.full_name === 'string' ? m.full_name.trim() : '';
+  return n || '';
+}
+
+function nombreParaMenuUsuario() {
+  const meta = nombreMetaSesion();
+  if (perfilUsuario) {
+    const n = (perfilUsuario.full_name || '').trim();
+    if (n) return n;
+    if (meta) return meta;
+    const mail = String(perfilUsuario.email || '');
+    if (mail.endsWith(`@${DOMINIO_USUARIO_INTERNO}`)) return usuarioLoginVisible(mail);
+    return 'Usuario';
+  }
+  if (meta) return meta;
+  return nombreRegistradoDesdeAuthUser();
+}
+
+function pedidoNuevoBase() {
+  return {
+    assignedTo: null,
+    createdBy: sesionActiva?.user?.id ?? null,
+    enCurso: false,
+    posicionPendiente: null,
+    entregado: false,
+    noEntregado: false,
+    envioRecogido: false,
+    notificadoEnCamino: false,
+    llegoDestino: false,
+    cancelado: false,
+    metodoPagoEntrega: '',
+    montoNequi: 0,
+    montoDaviplata: 0,
+    montoEfectivo: 0
+  };
+}
+
+function rowToPedido(r) {
+  const coords = (r.coords_lat != null && r.coords_lng != null && Number.isFinite(Number(r.coords_lat)) && Number.isFinite(Number(r.coords_lng)))
+    ? { lat: Number(r.coords_lat), lng: Number(r.coords_lng) }
+    : null;
+  let productos = [];
+  if (Array.isArray(r.productos)) productos = r.productos;
+  else if (typeof r.productos === 'string') {
+    try { productos = JSON.parse(r.productos); } catch (e) { productos = []; }
+  }
+  return {
+    id: Number(r.id),
+    assignedTo: r.assigned_to || null,
+    createdBy: r.created_by || null,
+    nombre: r.nombre || '',
+    telefono: r.telefono || '',
+    direccion: r.direccion || '',
+    valor: String(r.valor != null ? r.valor : '0'),
+    textoOriginal: r.texto_original || '',
+    mapUrl: r.map_url || '',
+    coords,
+    enCurso: !!r.en_curso,
+    posicionPendiente: Number.isInteger(Number(r.posicion_pendiente)) ? Number(r.posicion_pendiente) : null,
+    entregado: !!r.entregado,
+    noEntregado: !!r.no_entregado,
+    envioRecogido: !!r.envio_recogido,
+    notificadoEnCamino: !!r.notificado_en_camino,
+    llegoDestino: !!r.llego_destino,
+    cancelado: !!r.cancelado,
+    metodoPagoEntrega: r.metodo_pago_entrega || '',
+    montoNequi: Number(r.monto_nequi || 0),
+    montoDaviplata: Number(r.monto_daviplata || 0),
+    montoEfectivo: Number(r.monto_efectivo || 0)
+  };
+}
+
+function pedidoToRow(p, sortIndex) {
+  return {
+    id: p.id,
+    assigned_to: p.assignedTo || null,
+    created_by: p.createdBy || sesionActiva?.user?.id || null,
+    nombre: p.nombre || '',
+    telefono: p.telefono || '',
+    direccion: p.direccion || '',
+    valor: String(p.valor || '0'),
+    map_url: p.mapUrl || null,
+    texto_original: p.textoOriginal || null,
+    coords_lat: p.coords && Number.isFinite(Number(p.coords.lat)) ? Number(p.coords.lat) : null,
+    coords_lng: p.coords && Number.isFinite(Number(p.coords.lng)) ? Number(p.coords.lng) : null,
+    productos: p.productos || [],
+    en_curso: !!p.enCurso,
+    posicion_pendiente: Number.isInteger(p.posicionPendiente) ? p.posicionPendiente : null,
+    entregado: !!p.entregado,
+    no_entregado: !!p.noEntregado,
+    envio_recogido: !!p.envioRecogido,
+    notificado_en_camino: !!p.notificadoEnCamino,
+    llego_destino: !!p.llegoDestino,
+    cancelado: !!p.cancelado,
+    metodo_pago_entrega: p.metodoPagoEntrega || '',
+    monto_nequi: Number(p.montoNequi || 0),
+    monto_daviplata: Number(p.montoDaviplata || 0),
+    monto_efectivo: Number(p.montoEfectivo || 0),
+    sort_index: sortIndex,
+    updated_at: new Date().toISOString()
+  };
+}
+
+function esErrorLockAuthSupabase(msg) {
+  return /lock:sb-|stole it|released because another request/i.test(String(msg || ''));
+}
+
+function pausaMs(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function withTimeout(promise, ms, etiqueta) {
+  const resultado = await Promise.race([
+    promise,
+    pausaMs(ms).then(() => ({ __timeout: true }))
+  ]);
+  if (resultado && resultado.__timeout) {
+    return { __timeout: true, etiqueta };
+  }
+  return resultado;
+}
+
+/** Evita quedarse en “Comprobando sesión…” si getSession() no termina (pocos segundos bastan). */
+async function obtenerSesionInicialConTimeout(ms) {
+  try {
+    const resultado = await Promise.race([
+      supabaseCliente.auth.getSession(),
+      pausaMs(ms).then(() => ({ __timeout: true }))
+    ]);
+    if (resultado && resultado.__timeout) {
+      console.warn('getSession superó el tiempo de espera; se muestra el login.');
+      return { session: null, error: null };
+    }
+    const err = resultado?.error ?? null;
+    const session = resultado?.data?.session ?? null;
+    return { session, error: err };
+  } catch (e) {
+    console.error(e);
+    return { session: null, error: e };
+  }
+}
+
+async function cargarPedidosDesdeSupabase() {
+  if (!supabaseCliente || !sesionActiva) return;
+  const maxIntentos = 4;
+  for (let intento = 0; intento < maxIntentos; intento++) {
+    const res = await withTimeout(
+      supabaseCliente
+        .from('pedidos')
+        .select('*')
+        .order('sort_index', { ascending: true })
+        .order('id', { ascending: true }),
+      8000,
+      'pedidos.select'
+    );
+    if (res && res.__timeout) {
+      // Fallback REST directo (evita cuelgues por getSession()).
+      try {
+        const token = sesionActiva?.access_token;
+        const url = `${window.SUPABASE_URL}/rest/v1/pedidos?select=*&order=sort_index.asc,id.asc`;
+        const resp = await withTimeout(
+          fetch(url, {
+            headers: {
+              apikey: window.SUPABASE_ANON_KEY,
+              Authorization: `Bearer ${token}`
+            }
+          }),
+          8000,
+          'pedidos.fetch'
+        );
+        if (resp && resp.__timeout) {
+          continue;
+        }
+        if (!resp || !resp.ok) {
+          const status = resp ? resp.status : 'ERR';
+          console.warn('[app-delivery] pedidos REST HTTP', status);
+          continue;
+        }
+        const dataJson = await resp.json();
+        const rows = Array.isArray(dataJson) ? dataJson : [];
+        if (rows.length === 0) {
+          // Si por red/RLS llega vacío, no borres lo que ya tenemos en cache local.
+          if (!Array.isArray(pedidos) || pedidos.length === 0) {
+            pedidos = deduplicarPedidosPorId(cargarCachePedidos());
+          }
+        } else {
+          pedidos = deduplicarPedidosPorId(rows.map(rowToPedido));
+          guardarCachePedidos();
+        }
+        if (pedidos.length > 0) nextPedidoId = Math.max(...pedidos.map((p) => p.id), 0) + 1;
+        else nextPedidoId = 1;
+        return;
+      } catch (e) {
+        console.error(e);
+        continue;
+      }
+    }
+    const { data, error } = res || {};
+    if (!error) {
+      const rows = data || [];
+      if (rows.length === 0) {
+        // No borrar cache local si supabase devuelve vacío.
+        if (!Array.isArray(pedidos) || pedidos.length === 0) {
+          pedidos = deduplicarPedidosPorId(cargarCachePedidos());
+        }
+      } else {
+        pedidos = deduplicarPedidosPorId(rows.map(rowToPedido));
+        guardarCachePedidos();
+      }
+      if (pedidos.length > 0) {
+        nextPedidoId = Math.max(...pedidos.map((p) => p.id), 0) + 1;
+      } else {
+        nextPedidoId = 1;
+      }
+      return;
+    }
+    console.error(error);
+    const msg = String(error.message || '');
+    if (esErrorLockAuthSupabase(msg) && intento < maxIntentos - 1) {
+      await pausaMs(180 + intento * 280);
+      continue;
+    }
+    alert('No se pudieron cargar los pedidos: ' + msg);
+    return;
+  }
+}
+
+async function persistPedidosToSupabase(opciones = {}) {
+  if (!supabaseCliente || !sesionActiva) return;
+  const rows = pedidos.map((p, i) => pedidoToRow(p, i));
+  if (rows.length === 0) return;
+  const silent = !!opciones.silent;
+
+  const intentarUpsertRest = async () => {
+    const token = sesionActiva?.access_token;
+    const url = `${window.SUPABASE_URL}/rest/v1/pedidos?on_conflict=id`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        apikey: window.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates,return=minimal'
+      },
+      body: JSON.stringify(rows),
+      // keepalive solo ayuda en unload, pero también puede fallar; lo dejamos por defecto.
+      keepalive: !!opciones.keepalive
+    });
+    return resp;
+  };
+
+  try {
+    const res = await withTimeout(
+      supabaseCliente.from('pedidos').upsert(rows, { onConflict: 'id' }),
+      8000,
+      'pedidos.upsert'
+    );
+    if (res && res.__timeout) {
+      const resp = await intentarUpsertRest();
+      if (!resp.ok) {
+        console.warn('[app-delivery] pedidos upsert REST HTTP', resp.status);
+        if (!silent) alert('Error al guardar pedidos (HTTP ' + resp.status + ').');
+      }
+      return;
+    }
+    const { error } = res || {};
+    if (!error) return;
+
+    console.error(error);
+    // Si el cliente falló por red, intentamos REST.
+    try {
+      const resp = await intentarUpsertRest();
+      if (!resp.ok) {
+        console.warn('[app-delivery] pedidos upsert REST HTTP', resp.status);
+        if (!silent) alert('Error al guardar pedidos (HTTP ' + resp.status + ').');
+      }
+      return;
+    } catch (e2) {
+      console.error(e2);
+      if (!silent) alert('Error al guardar pedidos: ' + (error.message || 'Fallo de red'));
+      return;
+    }
+  } catch (e) {
+    console.error(e);
+    try {
+      const resp = await intentarUpsertRest();
+      if (!resp.ok) {
+        console.warn('[app-delivery] pedidos upsert REST HTTP', resp.status);
+        if (!silent) alert('Error al guardar pedidos (HTTP ' + resp.status + ').');
+      }
+    } catch (e2) {
+      console.error(e2);
+      if (!silent) alert('Error al guardar pedidos: ' + (e.message || 'Fallo de red'));
+    }
+  }
+}
+
+function programarRecargaPedidosPorRealtime() {
+  if (recargaPedidosRealtimeTimer) clearTimeout(recargaPedidosRealtimeTimer);
+  recargaPedidosRealtimeTimer = setTimeout(() => {
+    recargaPedidosRealtimeTimer = null;
+    if (!sesionActiva) return;
+    cargarPedidosDesdeSupabase().then(() => {
+      renderPedidos();
+      actualizarMarcadores();
+    });
+  }, 500);
+}
+
+function suscribirRealtimePedidos() {
+  if (!supabaseCliente || !sesionActiva || canalRealtimePedidos) return;
+  canalRealtimePedidos = supabaseCliente
+    .channel('pedidos-cambios')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'pedidos' }, () => {
+      programarRecargaPedidosPorRealtime();
+    })
+    .subscribe();
+}
+
+function desuscribirRealtimePedidos() {
+  if (recargaPedidosRealtimeTimer) {
+    clearTimeout(recargaPedidosRealtimeTimer);
+    recargaPedidosRealtimeTimer = null;
+  }
+  if (canalRealtimePedidos && supabaseCliente) {
+    supabaseCliente.removeChannel(canalRealtimePedidos);
+    canalRealtimePedidos = null;
+  }
+}
+
+function inicializarClienteSupabase() {
+  const url = typeof window !== 'undefined' ? window.SUPABASE_URL : '';
+  const key = typeof window !== 'undefined' ? window.SUPABASE_ANON_KEY : '';
+  if (!url || !key || String(url).includes('TU-PROYECTO') || String(key).includes('TU_CLAVE')) {
+    alert('Configura SUPABASE_URL y SUPABASE_ANON_KEY en supabase-config.js (copia desde supabase-config.example.js).');
+    return null;
+  }
+  const { createClient } = window.supabase;
+  if (!createClient) {
+    alert('No se cargó la librería de Supabase.');
+    return null;
+  }
+  const client = createClient(url, key, {
+    auth: {
+      // lock: false NO desactiva el LockManager (es falsy y gotrue cae en navigator.locks).
+      // Hay que pasar un lock explícito que ejecute el callback sin Web Locks.
+      lock: async (_name, _acquireTimeout, fn) => await fn(),
+      // Evita choques con otros clientes GoTrue en el mismo navegador (incluye pruebas en consola).
+      // Si se comparte storageKey, getSession() puede quedarse colgado por locks/carreras.
+      storageKey: 'app-delivery-auth',
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: true
+    }
+  });
+  try { window.supabaseCliente = client; } catch (_e) {}
+  return client;
+}
+
+function filaPerfilDesdeRpc(data) {
+  if (data == null) return null;
+  if (Array.isArray(data)) return data[0] ?? null;
+  return data;
+}
+
+/** PostgREST / RPC pueden devolver filas con matices de forma; unificamos a lo que usa la app. */
+function perfilNormalizadoDesdeFila(row) {
+  if (!row || typeof row !== 'object') return null;
+  const id = row.id;
+  if (!id) return null;
+  const roleRaw = row.role ?? row.Role;
+  const email = row.email ?? row.Email ?? '';
+  const full_name = row.full_name ?? row.fullName ?? '';
+  const created_at = row.created_at ?? row.createdAt ?? null;
+  return {
+    id,
+    email: String(email || ''),
+    full_name: String(full_name || ''),
+    role: String(roleRaw != null ? roleRaw : 'repartidor')
+      .toLowerCase()
+      .trim() || 'repartidor',
+    created_at
+  };
+}
+
+function rpcDevuelveVerdadero(data) {
+  if (data === true || data === 'true' || data === 't' || data === 1 || data === '1') return true;
+  if (Array.isArray(data)) {
+    if (data.length === 0) return false;
+    return rpcDevuelveVerdadero(data[0]);
+  }
+  if (data && typeof data === 'object') {
+    if (Object.prototype.hasOwnProperty.call(data, 'is_admin')) {
+      return rpcDevuelveVerdadero(data.is_admin);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'value')) {
+      return rpcDevuelveVerdadero(data.value);
+    }
+    const vals = Object.values(data);
+    if (vals.length === 1) return rpcDevuelveVerdadero(vals[0]);
+  }
+  return false;
+}
+
+/** Si la BD dice que eres admin (función is_admin), fuerza role admin en memoria (repara RLS, caché o columnas raras). */
+async function aplicarPerfilAdminSiIsAdminRpc() {
+  if (!supabaseCliente || !sesionActiva?.user?.id) return false;
+  if (esAdmin()) return true;
+  const { data, error } = await supabaseCliente.rpc('is_admin');
+  if (error) {
+    console.warn('[app-delivery] RPC is_admin:', error.message);
+    return false;
+  }
+  if (!rpcDevuelveVerdadero(data)) return false;
+  const u = sesionActiva.user;
+  if (perfilUsuario && perfilUsuario.id === u.id) {
+    perfilUsuario = { ...perfilUsuario, role: 'admin' };
+  } else {
+    perfilUsuario = {
+      id: u.id,
+      email: u.email || '',
+      full_name: (u.user_metadata && u.user_metadata.full_name) || '',
+      role: 'admin',
+      created_at: perfilUsuario && perfilUsuario.created_at ? perfilUsuario.created_at : null
+    };
+  }
+  marcarHintAdminSesion(u.id);
+  return true;
+}
+
+async function asegurarUIAdminDesdeRpc() {
+  if (!sesionActiva?.user?.id) return;
+  // Si ya es admin, igual puede faltar cargar la lista de usuarios tras recargar.
+  if (!esAdmin()) {
+    const ok = await aplicarPerfilAdminSiIsAdminRpc();
+    if (!ok) return;
+  }
+  syncMainAdminClass();
+  const taPegar = document.getElementById('textoPedido');
+  if (taPegar) taPegar.readOnly = false;
+  const btnProc = document.getElementById('btnProcesarPedido');
+  if (btnProc) btnProc.disabled = false;
+  const panelAdmin = document.getElementById('panelAdmin');
+  if (panelAdmin) panelAdmin.style.display = 'block';
+  const btnElim = document.getElementById('btnEliminarTodos');
+  if (btnElim) btnElim.style.display = 'inline-flex';
+  // Cargar/recargar usuarios admin (por recargas puede quedar vacío).
+  void cargarUsuariosParaAdmin();
+}
+
+async function refrescarPerfilUsuario() {
+  try {
+    if (!supabaseCliente || !sesionActiva?.user?.id) {
+      perfilUsuario = null;
+      return;
+    }
+    // En recarga, no esconder secciones admin mientras llega la verificación remota.
+    aplicarHintAdminSesion();
+    const { data: rpcData, error: rpcError } = await supabaseCliente.rpc('get_my_profile');
+    if (!rpcError) {
+      const row = perfilNormalizadoDesdeFila(filaPerfilDesdeRpc(rpcData));
+      if (row) {
+        perfilUsuario = row;
+        return;
+      }
+    } else if (!String(rpcError.message || '').includes('get_my_profile')) {
+      console.error(rpcError);
+    }
+
+    const maxIntentos = 3;
+    for (let intento = 0; intento < maxIntentos; intento++) {
+      const { data, error } = await supabaseCliente
+        .from('profiles')
+        .select('id,email,full_name,role,created_at')
+        .eq('id', sesionActiva.user.id)
+        .maybeSingle();
+      if (!error) {
+        if (data === null && intento < maxIntentos - 1) {
+          await pausaMs(350 + intento * 200);
+          continue;
+        }
+        perfilUsuario = data ? perfilNormalizadoDesdeFila(data) : null;
+        if (perfilUsuario === null) {
+          console.warn(
+            '[app-delivery] No hay fila en public.profiles para tu usuario (id = auth.uid). La app usa esa tabla para el rol admin, no el panel de Authentication.'
+          );
+        }
+        return;
+      }
+      console.error(error);
+      const msg = String(error.message || '');
+      if (esErrorLockAuthSupabase(msg) && intento < maxIntentos - 1) {
+        await pausaMs(120 + intento * 180);
+        continue;
+      }
+      perfilUsuario = null;
+      return;
+    }
+  } finally {
+    try {
+      if (sesionActiva?.user?.id) {
+        await aplicarPerfilAdminSiIsAdminRpc();
+      }
+    } catch (e) {
+      console.warn(e);
+    }
+    syncMainAdminClass();
+  }
+}
+
+async function cargarUsuariosParaAdmin() {
+  if (!supabaseCliente || !sesionActiva?.user?.id) return;
+  if (cargaUsuariosAdminEnCurso) return;
+  // En recargas puede estar admin “visual” (hint) pero aún no aplicado en perfilUsuario.
+  // Intentamos elevar por RPC antes de abandonar.
+  if (!esAdmin()) {
+    try { await aplicarPerfilAdminSiIsAdminRpc(); } catch (_e) {}
+  }
+  if (!esAdmin()) return;
+  cargaUsuariosAdminEnCurso = true;
+  const cont = document.getElementById('listaUsuariosAdmin');
+  if (cont && (!usuariosRegistrados || usuariosRegistrados.length === 0)) {
+    const cache = cargarCacheUsuariosAdmin();
+    if (cache.length > 0) {
+      usuariosRegistrados = cache;
+      renderPanelAdminUsuarios();
+    } else {
+      cont.innerHTML = `<div class="admin-usuarios-ayuda">Cargando usuarios…</div>`;
+    }
+  }
+
+  try {
+    const maxIntentos = 3;
+    for (let intento = 0; intento < maxIntentos; intento++) {
+      console.debug('[app-delivery] cargarUsuariosParaAdmin intento', intento + 1);
+      const res = await withTimeout(
+        supabaseCliente
+          .from('profiles')
+          .select('id,email,full_name,role,created_at')
+          .order('created_at', { ascending: true }),
+        8000,
+        'profiles.select'
+      );
+      if (res && res.__timeout) {
+        // Fallback: si la librería se cuelga esperando getSession(), usa REST directo con access_token.
+        try {
+          const url = `${window.SUPABASE_URL}/rest/v1/profiles?select=id,email,full_name,role,created_at&order=created_at.asc`;
+          const token = sesionActiva?.access_token;
+          const resp = await withTimeout(
+            fetch(url, {
+              headers: {
+                apikey: window.SUPABASE_ANON_KEY,
+                Authorization: `Bearer ${token}`
+              }
+            }),
+            8000,
+            'profiles.fetch'
+          );
+          if (resp && resp.__timeout) {
+            if (cont) {
+              cont.innerHTML = `<div class="admin-usuarios-ayuda">Tiempo de espera cargando usuarios. Revisa tu conexión y recarga.</div>`;
+            }
+            return;
+          }
+          if (!resp || !resp.ok) {
+            const status = resp ? resp.status : 'ERR';
+            if (cont) {
+              cont.innerHTML = `<div class="admin-usuarios-ayuda">No se pudieron cargar usuarios (HTTP ${escapeHtmlAttr(String(status))}).</div>`;
+            }
+            return;
+          }
+          const dataJson = await resp.json();
+          usuariosRegistrados = (Array.isArray(dataJson) ? dataJson : []).map((u) => ({
+            ...u,
+            role: String(u.role || '').toLowerCase().trim()
+          }));
+          renderPanelAdminUsuarios();
+          guardarCacheUsuariosAdmin();
+          return;
+        } catch (e) {
+          console.error(e);
+          if (cont) {
+            cont.innerHTML = `<div class="admin-usuarios-ayuda">No se pudieron cargar usuarios. Revisa tu conexión y recarga.</div>`;
+          }
+          return;
+        }
+      }
+      const { data, error } = res || {};
+      if (!error) {
+        usuariosRegistrados = (data || []).map((u) => ({
+          ...u,
+          role: String(u.role || '').toLowerCase().trim()
+        }));
+        renderPanelAdminUsuarios();
+        guardarCacheUsuariosAdmin();
+        return;
+      }
+      console.error(error);
+      const msg = String(error.message || '');
+      if (esErrorLockAuthSupabase(msg) && intento < maxIntentos - 1) {
+        await pausaMs(180 + intento * 260);
+        continue;
+      }
+      if (cont) {
+        cont.innerHTML = `<div class="admin-usuarios-ayuda">No se pudieron cargar usuarios: ${escapeHtmlAttr(msg)}</div>`;
+      }
+      return;
+    }
+  } finally {
+    cargaUsuariosAdminEnCurso = false;
+  }
+}
+
+function renderPanelAdminUsuarios() {
+  const cont = document.getElementById('listaUsuariosAdmin');
+  if (!cont || !esAdmin()) return;
+  if (usuariosRegistrados.length === 0) {
+    cont.innerHTML = '<p class="admin-sin-usuarios">No hay usuarios.</p>';
+    return;
+  }
+  cont.innerHTML = usuariosRegistrados.map((u) => {
+    const esYo = u.id === sesionActiva?.user?.id;
+    const disabled = esYo ? 'disabled' : '';
+    return `
+      <div class="admin-usuario-fila" data-user-id="${u.id}">
+        <div class="admin-usuario-datos">
+          <strong>${(u.full_name || '').trim() || '(Sin nombre)'}</strong>
+          <span class="admin-usuario-email">Usuario: ${escapeHtmlAttr(usuarioLoginVisible(u.email))}</span>
+          <span class="admin-usuario-rol">Rol actual: <b>${u.role}</b></span>
+        </div>
+        <div class="admin-usuario-acciones">
+          <select class="admin-rol-select" data-user-id="${u.id}" ${disabled}>
+            <option value="repartidor" ${u.role === 'repartidor' ? 'selected' : ''}>Repartidor</option>
+            <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Administrador</option>
+          </select>
+          <button type="button" class="btn-primary btn-sm" onclick="aplicarCambioRolDesdeFila('${u.id}')" ${disabled}>Guardar rol</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function aplicarCambioRolDesdeFila(userId) {
+  if (!esAdmin() || userId === sesionActiva?.user?.id) return;
+  const sel = document.querySelector(`.admin-rol-select[data-user-id="${userId}"]`);
+  if (!sel) return;
+  const nuevoRol = sel.value;
+  const { error } = await supabaseCliente.from('profiles').update({ role: nuevoRol }).eq('id', userId);
+  if (error) {
+    alert('No se pudo actualizar el rol: ' + error.message);
+    return;
+  }
+  await cargarUsuariosParaAdmin();
+  alert('Rol actualizado.');
+}
+
+async function asignarPedidoRepartidor(pedidoId, repartidorIdRaw) {
+  if (!esAdmin() || !supabaseCliente) return;
+  const repartidorId = repartidorIdRaw && String(repartidorIdRaw).trim() ? String(repartidorIdRaw).trim() : null;
+  const { error } = await supabaseCliente
+    .from('pedidos')
+    .update({ assigned_to: repartidorId, updated_at: new Date().toISOString() })
+    .eq('id', pedidoId);
+  if (error) {
+    alert('No se pudo asignar: ' + error.message);
+    return;
+  }
+  const p = pedidos.find(x => x.id === pedidoId);
+  if (p) p.assignedTo = repartidorId;
+  renderPedidos();
+  actualizarMarcadores();
+}
+
+function asignarPedidoDesdeTarjeta(pedidoId) {
+  const sel = document.getElementById(`asignar-select-${pedidoId}`);
+  asignarPedidoRepartidor(pedidoId, sel ? sel.value : '');
+}
+
+async function asignarSeccionPedidos(claseExtra) {
+  if (!esAdmin() || !supabaseCliente) return;
+  const sel = document.getElementById(`asignar-seccion-${claseExtra}`);
+  if (!sel) return;
+  const repartidorId = sel.value && String(sel.value).trim() ? String(sel.value).trim() : null;
+  const ids = pedidos
+    .filter((p) => {
+      if (p.cancelado || p.entregado) return false;
+      if (claseExtra === 'seccion-en-curso') return !!p.enCurso;
+      if (claseExtra === 'seccion-pendientes') return !p.enCurso;
+      return false;
+    })
+    .map((p) => p.id);
+  if (ids.length === 0) return;
+  const { error } = await supabaseCliente
+    .from('pedidos')
+    .update({ assigned_to: repartidorId, updated_at: new Date().toISOString() })
+    .in('id', ids);
+  if (error) {
+    alert('No se pudo asignar la sección: ' + error.message);
+    return;
+  }
+  pedidos.forEach((p) => {
+    if (ids.includes(p.id)) p.assignedTo = repartidorId;
+  });
+  renderPedidos();
+  actualizarMarcadores();
+}
+
+function escapeHtmlAttr(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/"/g, '&quot;');
+}
+
+function mostrarTabAuth(tab) {
+  const loginForm = document.getElementById('authFormLogin');
+  const regForm = document.getElementById('authFormRegistro');
+  const tabLogin = document.getElementById('authTabLogin');
+  const tabReg = document.getElementById('authTabRegistro');
+  const errL = document.getElementById('authErrorLogin');
+  const errR = document.getElementById('authErrorRegistro');
+  if (errL) errL.style.display = 'none';
+  if (errR) errR.style.display = 'none';
+  if (tab === 'registro') {
+    if (loginForm) loginForm.style.display = 'none';
+    if (regForm) regForm.style.display = 'block';
+    if (tabLogin) tabLogin.classList.remove('active');
+    if (tabReg) tabReg.classList.add('active');
+  } else {
+    if (loginForm) loginForm.style.display = 'block';
+    if (regForm) regForm.style.display = 'none';
+    if (tabLogin) tabLogin.classList.add('active');
+    if (tabReg) tabReg.classList.remove('active');
+  }
+}
+
+function opcionesSelectRepartidores(pedido) {
+  const opts = ['<option value="">Sin asignar</option>'];
+  const normalizarRol = (r) => String(r || '').toLowerCase().trim();
+  usuariosRegistrados.filter(u => normalizarRol(u.role) === 'repartidor').forEach((u) => {
+    const sel = pedido.assignedTo === u.id ? ' selected' : '';
+    const login = usuarioLoginVisible(u.email);
+    const label = `${(u.full_name || '').trim() || login || u.id}${login ? ' · ' + login : ''}`;
+    opts.push(`<option value="${u.id}"${sel}>${escapeHtmlAttr(label)}</option>`);
+  });
+  return opts.join('');
+}
+
+function aplicarLayoutAuthFijo() {
+  document.documentElement.classList.add('auth-layout');
+  document.body.classList.add('auth-layout');
+}
+
+function quitarLayoutAuthFijo() {
+  document.documentElement.classList.remove('auth-layout');
+  document.body.classList.remove('auth-layout');
+}
+
+function mostrarAuthComprobandoSesion() {
+  aplicarLayoutAuthFijo();
+  const auth = document.getElementById('authScreen');
+  const main = document.getElementById('mainApp');
+  const msg = document.getElementById('authBootMessage');
+  const card = document.getElementById('authCard');
+  if (auth) auth.style.display = 'flex';
+  if (main) main.style.display = 'none';
+  if (msg) msg.style.display = 'block';
+  if (card) card.style.display = 'none';
+}
+
+function mostrarPantallaAuth() {
+  marcarPantallaLogin();
+  aplicarLayoutAuthFijo();
+  const main = document.getElementById('mainApp');
+  if (main) main.classList.remove('app-es-admin');
+  const auth = document.getElementById('authScreen');
+  const msg = document.getElementById('authBootMessage');
+  const card = document.getElementById('authCard');
+  if (auth) auth.style.display = 'flex';
+  if (main) main.style.display = 'none';
+  if (msg) msg.style.display = 'none';
+  if (card) card.style.display = 'block';
+  desuscribirRealtimePedidos();
+  if (mapa) {
+    try { mapa.remove(); } catch (e) {}
+    mapa = null;
+    marcadores = [];
+    mapaAjustado = false;
+  }
+}
+
+function mostrarAppPrincipal() {
+  marcarPantallaMain();
+  quitarLayoutAuthFijo();
+  const auth = document.getElementById('authScreen');
+  const main = document.getElementById('mainApp');
+  if (auth) auth.style.display = 'none';
+  if (main) main.style.display = 'block';
+  const elNombre = document.getElementById('headerUserNombre');
+  const elRol = document.getElementById('headerUserRol');
+  if (elNombre) {
+    elNombre.textContent = nombreParaMenuUsuario();
+  }
+  if (elRol) {
+    if (perfilUsuario) {
+      elRol.textContent = perfilUsuario.role === 'admin' ? 'Administrador' : 'Repartidor';
+    } else if (sesionActiva?.user) {
+      elRol.textContent = '';
+    } else {
+      elRol.textContent = '';
+    }
+  }
+  syncMainAdminClass();
+  const adminUi = esAdminVisual();
+  const taPegar = document.getElementById('textoPedido');
+  if (taPegar) taPegar.readOnly = !adminUi;
+  const btnProc = document.getElementById('btnProcesarPedido');
+  if (btnProc) btnProc.disabled = !adminUi;
+  const panelAdmin = document.getElementById('panelAdmin');
+  if (panelAdmin) panelAdmin.style.display = adminUi ? 'block' : 'none';
+  const btnElim = document.getElementById('btnEliminarTodos');
+  if (btnElim) btnElim.style.display = adminUi ? 'inline-flex' : 'none';
+  const btnMediosPagoMenu = document.getElementById('btnMediosPagoMenu');
+  if (btnMediosPagoMenu) btnMediosPagoMenu.style.display = adminUi ? 'none' : 'flex';
+  if (adminUi) {
+    // En recargas, el perfil puede estar listo pero la lista de usuarios no se disparó.
+    void cargarUsuariosParaAdmin();
+  }
+  // Importante: si los pedidos vienen del cache local o llegan antes del boot,
+  // renderizar siempre las tarjetas al entrar/recargar.
+  try { renderPedidos(); } catch (_e) {}
+  // Refuerzo: en recargas, si profiles tarda/falla pero is_admin() ya dice true, reactivar UI admin.
+  void asegurarUIAdminDesdeRpc();
+  // Segundo refuerzo: cuando el arranque dispara varias consultas en paralelo,
+  // Supabase puede devolver “lock” momentáneo; reintentamos 2 veces.
+  setTimeout(() => { void asegurarUIAdminDesdeRpc(); }, 1800);
+  // Si por cualquier razón el boot no pobló perfilUsuario, recargar perfil y repintar UI.
+  if (!perfilUsuario && sesionActiva?.user?.id) {
+    setTimeout(() => {
+      if (refrescoPerfilEnCurso || !sesionActiva?.user?.id) return;
+      refrescoPerfilEnCurso = true;
+      Promise.resolve()
+        .then(() => refrescarPerfilUsuario())
+        .then(() => {
+          if (!sesionActiva) return;
+          // Re-render para reflejar rol/header y secciones admin.
+          const elNombre2 = document.getElementById('headerUserNombre');
+          const elRol2 = document.getElementById('headerUserRol');
+          if (elNombre2) elNombre2.textContent = nombreParaMenuUsuario();
+          if (elRol2) {
+            if (perfilUsuario) elRol2.textContent = perfilUsuario.role === 'admin' ? 'Administrador' : 'Repartidor';
+            else elRol2.textContent = '';
+          }
+          syncMainAdminClass();
+          void asegurarUIAdminDesdeRpc();
+        })
+        .finally(() => { refrescoPerfilEnCurso = false; });
+    }, 450);
+  }
+  // En algunos recargos el layout termina después del primer paint; forzamos repintado del mapa.
+  requestAnimationFrame(() => {
+    if (!sesionActiva) return;
+    try {
+      if (!mapa) initMap();
+      else {
+        mapaAjustado = false;
+        actualizarMarcadores();
+        ajustarMapaConReintentos();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  });
+}
+
+function cerrarMenuUsuario() {
+  const panel = document.getElementById('menuUsuarioPanel');
+  const btn = document.getElementById('btnMenuUsuario');
+  if (panel) panel.style.display = 'none';
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+function toggleMenuUsuario(ev) {
+  if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+  const panel = document.getElementById('menuUsuarioPanel');
+  const btn = document.getElementById('btnMenuUsuario');
+  if (!panel || !btn) return;
+  const abierto = panel.style.display === 'block';
+  panel.style.display = abierto ? 'none' : 'block';
+  btn.setAttribute('aria-expanded', abierto ? 'false' : 'true');
+}
+
+async function iniciarSesion() {
+  const usuario = document.getElementById('loginUsuario')?.value?.trim();
+  const password = document.getElementById('loginPassword')?.value || '';
+  const errEl = document.getElementById('authErrorLogin');
+  const btn = document.getElementById('btnLoginEntrar');
+  if (errEl) errEl.style.display = 'none';
+  if (!usuario || !password) {
+    if (errEl) { errEl.textContent = 'Completa correo o usuario y contraseña.'; errEl.style.display = 'block'; }
+    return;
+  }
+  const email = emailDesdeCampoUsuario(usuario);
+  if (!email) {
+    if (errEl) { errEl.textContent = 'Correo o usuario no válido.'; errEl.style.display = 'block'; }
+    return;
+  }
+  const labelOriginal = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Entrando…';
+  }
+  enFlujoLoginManual = true;
+  try {
+    const { data, error } = await supabaseCliente.auth.signInWithPassword({ email, password });
+    if (error) {
+      enFlujoLoginManual = false;
+      if (errEl) { errEl.textContent = error.message; errEl.style.display = 'block'; }
+      return;
+    }
+    if (data?.session) {
+      sesionActiva = data.session;
+      // Asegura rol/metadata antes de pintar UI (evita quedar como "Repartidor" tras salir/entrar).
+      try { await refrescarPerfilUsuario(); } catch (_e) {}
+      try { await aplicarPerfilAdminSiIsAdminRpc(); } catch (_e) {}
+      mostrarAppPrincipal();
+      void bootSesionYDatos()
+        .catch((bootErr) => {
+          console.error(bootErr);
+          if (sesionActiva) mostrarAppPrincipal();
+        })
+        .finally(() => {
+          enFlujoLoginManual = false;
+        });
+    } else {
+      enFlujoLoginManual = false;
+    }
+  } catch (e) {
+    enFlujoLoginManual = false;
+    console.error(e);
+    if (errEl) {
+      errEl.textContent = 'No se pudo conectar. Revisa la red o la configuración de Supabase.';
+      errEl.style.display = 'block';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = labelOriginal || 'Entrar';
+    }
+  }
+}
+
+function correoElectronicoValido(correo) {
+  const s = String(correo || '').trim().toLowerCase();
+  if (!s || !s.includes('@')) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+}
+
+async function registrarUsuario() {
+  const nombre = document.getElementById('regNombre')?.value?.trim() || '';
+  const correoRaw = document.getElementById('regEmail')?.value?.trim() || '';
+  const usuario = document.getElementById('regUsuario')?.value?.trim();
+  const password = document.getElementById('regPassword')?.value || '';
+  const errEl = document.getElementById('authErrorRegistro');
+  if (!correoRaw || !usuario || !password) {
+    if (errEl) { errEl.textContent = 'Completa correo, usuario y contraseña.'; errEl.style.display = 'block'; }
+    return;
+  }
+  if (!correoElectronicoValido(correoRaw)) {
+    if (errEl) { errEl.textContent = 'Ingresa un correo electrónico válido.'; errEl.style.display = 'block'; }
+    return;
+  }
+  if (password.length < 6) {
+    if (errEl) { errEl.textContent = 'La contraseña debe tener al menos 6 caracteres.'; errEl.style.display = 'block'; }
+    return;
+  }
+  const emailRegistro = correoRaw.toLowerCase().trim();
+  const emailUsuarioInterno = emailDesdeCampoUsuario(usuario);
+  if (!emailUsuarioInterno) {
+    if (errEl) { errEl.textContent = 'Elige otro usuario (solo letras, números, puntos y guiones).'; errEl.style.display = 'block'; }
+    return;
+  }
+  const { error } = await supabaseCliente.auth.signUp({
+    email: emailRegistro,
+    password,
+    options: { data: { full_name: nombre, app_username: usuario } }
+  });
+  if (error) {
+    if (errEl) { errEl.textContent = error.message; errEl.style.display = 'block'; }
+    return;
+  }
+  if (errEl) {
+    errEl.textContent = 'Cuenta creada. Ya puedes entrar con tu correo y contraseña.';
+    errEl.style.display = 'block';
+    errEl.style.color = '#15803d';
+  }
+  mostrarTabAuth('login');
+}
+
+async function cerrarSesion() {
+  cerrarMenuUsuario();
+  const client = supabaseCliente;
+  pedidos = [];
+  perfilUsuario = null;
+  sesionActiva = null;
+  limpiarHintAdminSesion();
+  try { localStorage.removeItem(CACHE_USUARIOS_ADMIN_KEY); } catch (_e) {}
+  mostrarPantallaAuth();
+  syncMainAdminClass();
+  if (client) {
+    void client.auth.signOut({ scope: 'local' }).catch((e) => console.error(e));
+  }
+}
+
 function ajustarMapaConReintentos() {
   if (!mapa) return;
   const elMapa = document.getElementById('mapa');
@@ -210,9 +1450,49 @@ function initMap() {
 }
 
 function limpiarTimestampsChat(texto) {
-  return texto
+  let t = String(texto || '')
     .replace(/\u200E|\u200F|\u200B|\u200C|\u200D|\uFEFF/g, '')
-    .replace(/\[\d{1,2}:\d{2}[^\]]{0,30}\]\s*[^:\n]+:\s*/g, '');
+    .replace(/\r\n/g, '\n');
+  // [1:01 p. m., 24/3/2026] Valero Storee: al inicio de línea (cualquier longitud entre [ ])
+  t = t.replace(/^\s*\[[^\]]+\]\s*[^:]+:\s*/gm, '');
+  // Mismo patrón si quedó pegado a mitad de línea
+  t = t.replace(/\s*\[[^\]]+\]\s*[^:]+:\s*/g, '');
+  return t.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function patronUrlMapsRegexGlobal() {
+  return /https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl|maps\.apple\.com|maps\.apple)[^\s\n]*/gi;
+}
+
+function patronUrlMapsRegexUna() {
+  return /https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl|maps\.apple\.com|maps\.apple)[^\s\n]*/i;
+}
+
+function extraerTodasLasUrlsMapsEnTexto(texto) {
+  const re = patronUrlMapsRegexGlobal();
+  return [...String(texto || '').matchAll(re)].map(m => m[0].trim());
+}
+
+function elegirUrlMapsParaBloque(textoCompletoLimpio, bloque, indiceBloque, urlsGlobal) {
+  const enBloque = bloque.match(patronUrlMapsRegexUna());
+  if (enBloque) return enBloque[0].trim();
+  if (urlsGlobal.length === 0) return '';
+  if (urlsGlobal.length === 1) return urlsGlobal[0];
+  const prefijo = bloque.split(/Para\s+agilizar/i)[0] || bloque;
+  const muestra = prefijo.trim().slice(0, 200);
+  const posBloque = muestra.length >= 20 ? textoCompletoLimpio.indexOf(muestra.slice(0, 40)) : -1;
+  const corte = posBloque >= 0 ? textoCompletoLimpio.slice(0, posBloque + 1) : textoCompletoLimpio;
+  let mejor = '';
+  let mejorPos = -1;
+  for (const u of urlsGlobal) {
+    const p = corte.lastIndexOf(u);
+    if (p > mejorPos) {
+      mejorPos = p;
+      mejor = u;
+    }
+  }
+  if (mejor) return mejor;
+  return urlsGlobal[Math.min(indiceBloque, urlsGlobal.length - 1)] || urlsGlobal[0];
 }
 
 function generarPedidoId(numeroPedido) {
@@ -223,10 +1503,13 @@ function generarPedidoId(numeroPedido) {
 }
 
 function extraerCamposPedido(bloque) {
-  const dirMatch = bloque.match(/📍[^\n]*:\s*([\s\S]*?)(?=🙋|$)/);
+  const dirMatch = bloque.match(/📍[^\n]*:\s*([\s\S]*?)(?=🙋|Nombre[^\n]*:|$)/u);
   const direccion = dirMatch ? dirMatch[1].trim().replace(/\n\s*/g, ' ').trim() : '';
 
-  const nomMatch = bloque.match(/🙋[^\n]*Nombre[^\n]*:\s*([\s\S]*?)(?=📲|$)/);
+  let nomMatch = bloque.match(/🙋[^\n]*Nombre[^\n]*:\s*([\s\S]*?)(?=📲|$)/u);
+  if (!nomMatch) {
+    nomMatch = bloque.match(/Nombre(?:\s+de\s+quien\s+recibir[aá][^\n]*)?\s*:\s*([\s\S]*?)(?=📲|$)/i);
+  }
   const nombre = nomMatch ? nomMatch[1].trim().split('\n')[0].trim() : '';
 
   const telMatch = bloque.match(/📲[^\n]*:\s*([\s\S]*?)(?=💰|$)/);
@@ -331,6 +1614,10 @@ async function obtenerCoordenadas(url, direccion) {
 }
 
 async function procesarPedido() {
+  if (!esAdmin()) {
+    alert('Solo el administrador puede crear pedidos.');
+    return;
+  }
   const texto = document.getElementById("textoPedido").value.trim();
   if (!texto) {
     alert("Por favor, pega el formato del pedido");
@@ -344,13 +1631,15 @@ async function procesarPedido() {
 
   const textoLimpio = limpiarTimestampsChat(texto);
 
-  const numeroMatch = textoLimpio.match(/(\d+):\s*\n?\s*Para agilizar/) || textoLimpio.match(/^(\d+):/m);
+  const numeroMatch = textoLimpio.match(/(\d+):\s*\n?\s*Para\s+agilizar/i) || textoLimpio.match(/^(\d+):/m);
   const numeroPedido = numeroMatch ? parseInt(numeroMatch[1]) : null;
 
   const campos = extraerCamposPedido(textoLimpio);
 
-  const urlEnTexto = texto.match(/https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl|maps\.apple\.com|maps\.apple)[^\s\n]*/i);
-  const mapUrl = urlEnTexto ? urlEnTexto[0] : '';
+  const urlsEnPegado = extraerTodasLasUrlsMapsEnTexto(textoLimpio);
+  const mapUrl = urlsEnPegado.length > 0
+    ? elegirUrlMapsParaBloque(textoLimpio, textoLimpio, 0, urlsEnPegado)
+    : '';
 
   if (!mapUrl) {
     alert("No se encontró URL de Google Maps en el texto pegado.\n\nAsegúrate de incluir el enlace de Maps junto con el formato del pedido.");
@@ -385,18 +1674,7 @@ async function procesarPedido() {
     textoOriginal: texto,
     mapUrl: mapUrlFinal,
     coords: { lat: coords.lat, lng: coords.lng },
-    enCurso: false,
-    posicionPendiente: null,
-    entregado: false,
-    noEntregado: false,
-    envioRecogido: false,
-    notificadoEnCamino: false,
-    llegoDestino: false,
-    cancelado: false,
-    metodoPagoEntrega: '',
-    montoNequi: 0,
-    montoDaviplata: 0,
-    montoEfectivo: 0
+    ...pedidoNuevoBase()
   });
 
   guardarPedidos();
@@ -415,9 +1693,13 @@ async function procesarPedido() {
 }
 
 async function procesarMultiplesPedidos(texto) {
+  if (!esAdmin()) {
+    alert('Solo el administrador puede crear pedidos.');
+    return;
+  }
   const textoLimpio = limpiarTimestampsChat(texto);
   const bloques = textoLimpio.split(/¿Todo en orden\?\s*😊?\s*/);
-  const urlRegex = /https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl|maps\.apple\.com|maps\.apple)[^\s\n]*/i;
+  const urlsGlobal = extraerTodasLasUrlsMapsEnTexto(textoLimpio);
 
   let agregados = 0;
   let errores = [];
@@ -425,12 +1707,13 @@ async function procesarMultiplesPedidos(texto) {
   const btnProcesar = document.querySelector('.btn-primary');
   const textoOriginalBtn = btnProcesar ? btnProcesar.textContent : '';
 
+  let indicePedidoEnLote = 0;
   for (const bloque of bloques) {
     if (!bloque.includes('📍')) continue;
 
-    const urlMatch = bloque.match(urlRegex);
-    const mapUrl = urlMatch ? urlMatch[0].trim() : '';
-    const numMatch = bloque.match(/(\d+):\s*\n/);
+    const mapUrl = elegirUrlMapsParaBloque(textoLimpio, bloque, indicePedidoEnLote, urlsGlobal);
+    indicePedidoEnLote += 1;
+    const numMatch = bloque.match(/(\d+):\s*\n?\s*Para\s+agilizar/i) || bloque.match(/(\d+):\s*\n/);
     const numLabel = numMatch ? '#' + numMatch[1] : '?';
 
     if (!mapUrl) {
@@ -464,18 +1747,7 @@ async function procesarMultiplesPedidos(texto) {
       textoOriginal: bloque.trim(),
       mapUrl: mapUrlFinal,
       coords: { lat: coords.lat, lng: coords.lng },
-      enCurso: false,
-      posicionPendiente: null,
-      entregado: false,
-      noEntregado: false,
-      envioRecogido: false,
-      notificadoEnCamino: false,
-      llegoDestino: false,
-      cancelado: false,
-      metodoPagoEntrega: '',
-      montoNequi: 0,
-      montoDaviplata: 0,
-      montoEfectivo: 0
+      ...pedidoNuevoBase()
     });
 
     agregados++;
@@ -498,12 +1770,45 @@ async function procesarMultiplesPedidos(texto) {
 }
 
 function guardarPedidos() {
-  localStorage.setItem("pedidos", JSON.stringify(pedidos));
+  if (!supabaseCliente || !sesionActiva) return;
+  // Evita duplicados por carreras de cache/red.
+  pedidos = deduplicarPedidosPorId(pedidos);
+  // Persistencia inmediata local para que no desaparezca al recargar.
+  guardarCachePedidos();
+  if (persistTimeoutId) clearTimeout(persistTimeoutId);
+  persistTimeoutId = setTimeout(() => {
+    persistTimeoutId = null;
+    void persistPedidosToSupabase();
+  }, 450);
+}
+
+function actualizarPestañasListaPedidos(pendientes, enCurso, entregados, cancelados) {
+  const tabs = document.querySelectorAll('#pedidosTabs [data-vista-pedidos]');
+  const cfg = {
+    pendientes: { icon: 'fa-regular fa-clock', texto: 'Pendientes' },
+    enCurso: { icon: 'fa-solid fa-truck-fast', texto: 'En ruta' },
+    entregados: { icon: 'fa-solid fa-circle-check', texto: 'Finalizados' },
+    cancelados: { icon: 'fa-solid fa-ban', texto: 'Cancelados' }
+  };
+  tabs.forEach((btn) => {
+    const vista = btn.getAttribute('data-vista-pedidos');
+    if (!vista || !cfg[vista]) return;
+    let n = 0;
+    if (vista === 'pendientes') n = pendientes.length;
+    else if (vista === 'enCurso') n = enCurso.length;
+    else if (vista === 'entregados') n = entregados.length;
+    else if (vista === 'cancelados') n = cancelados.length;
+    const { icon, texto } = cfg[vista];
+    btn.innerHTML = `<i class="${icon}"></i> ${texto} (${n})`;
+    btn.hidden = vista !== 'pendientes' && n === 0;
+    btn.classList.toggle('active', vista === vistaPedidosActual);
+  });
 }
 
 function renderPedidos() {
+  // Si en memoria quedaron duplicados (por cache o recargas), normalizar antes de pintar.
+  pedidos = deduplicarPedidosPorId(pedidos);
   const lista = document.getElementById("listaPedidos");
-  const tabs = document.querySelectorAll('#pedidosTabs .pedidos-tab');
   const pendientes = [];
   const enCurso = [];
   const entregados = [];
@@ -529,39 +1834,21 @@ function renderPedidos() {
     vistaPedidosActual = 'pendientes';
   }
 
-  tabs.forEach(btn => {
-    const onClick = btn.getAttribute('onclick') || '';
-    if (onClick.includes("'pendientes'")) {
-      btn.innerHTML = `<i class="fa-regular fa-clock"></i> Pendientes (${pendientes.length})`;
-      btn.style.display = 'inline-flex';
-    } else if (onClick.includes("'enCurso'")) {
-      btn.innerHTML = `<i class="fa-solid fa-truck-fast"></i> En ruta (${enCurso.length})`;
-      btn.style.display = enCurso.length > 0 ? 'inline-flex' : 'none';
-    } else if (onClick.includes("'entregados'")) {
-      btn.innerHTML = `<i class="fa-solid fa-circle-check"></i> Finalizados (${entregados.length})`;
-      btn.style.display = entregados.length > 0 ? 'inline-flex' : 'none';
-    } else if (onClick.includes("'cancelados'")) {
-      btn.innerHTML = `<i class="fa-solid fa-ban"></i> Cancelados (${cancelados.length})`;
-      btn.style.display = cancelados.length > 0 ? 'inline-flex' : 'none';
-    }
-  });
-
   if (pedidos.length === 0) {
-    lista.innerHTML = '<div class="empty-state" id="emptyState"><p>No hay pedidos aún</p><p style="font-size: 14px;">Pega un formato de pedido arriba para comenzar</p></div>';
-    tabs.forEach(btn => {
-      const activa = btn.getAttribute('onclick')?.includes(`'${vistaPedidosActual}'`);
-      btn.classList.toggle('active', !!activa);
-    });
+    vistaPedidosActual = 'pendientes';
+    vistaPedidosSeleccionadaManual = false;
+    const subVacio = esAdmin()
+      ? 'Pega un formato de pedido arriba para comenzar'
+      : 'Los pedidos aparecerán aquí cuando el administrador los cree y te asigne.';
+    lista.innerHTML = `<div class="empty-state" id="emptyState"><p>No hay pedidos aún</p><p style="font-size: 14px;">${escapeHtmlAttr(subVacio)}</p></div>`;
+    actualizarPestañasListaPedidos([], [], [], []);
     renderListaOrdenEntrega();
     return;
   }
 
-  lista.innerHTML = "";
+  actualizarPestañasListaPedidos(pendientes, enCurso, entregados, cancelados);
 
-  tabs.forEach(btn => {
-    const activa = btn.getAttribute('onclick')?.includes(`'${vistaPedidosActual}'`);
-    btn.classList.toggle('active', !!activa);
-  });
+  lista.innerHTML = "";
 
   if (vistaPedidosActual === 'enCurso') {
     lista.appendChild(crearSeccionPedidos('seccion-en-curso', enCurso, 'No hay pedidos en ruta'));
@@ -618,6 +1905,17 @@ function renderPedidos() {
 
 function cambiarVistaPedidos(vista) {
   if (!['pendientes', 'enCurso', 'entregados', 'cancelados'].includes(vista)) return;
+  let n = 0;
+  if (vista === 'pendientes') {
+    n = pedidos.filter((p) => !p.cancelado && !p.entregado && !p.enCurso).length;
+  } else if (vista === 'enCurso') {
+    n = pedidos.filter((p) => !p.cancelado && !p.entregado && p.enCurso).length;
+  } else if (vista === 'entregados') {
+    n = pedidos.filter((p) => p.entregado).length;
+  } else if (vista === 'cancelados') {
+    n = pedidos.filter((p) => p.cancelado).length;
+  }
+  if (vista !== 'pendientes' && n === 0) return;
   vistaPedidosSeleccionadaManual = true;
   vistaPedidosActual = vista;
   renderPedidos();
@@ -626,6 +1924,24 @@ function cambiarVistaPedidos(vista) {
 function crearSeccionPedidos(claseExtra, items, textoVacio) {
   const seccion = document.createElement('div');
   seccion.className = `pedidos-seccion ${claseExtra}`;
+
+  const adminUi = esAdminVisual();
+  const permitirAsignacionMasiva = adminUi && items.length > 0 && (claseExtra === 'seccion-pendientes' || claseExtra === 'seccion-en-curso');
+  if (permitirAsignacionMasiva) {
+    const header = document.createElement('div');
+    header.className = 'admin-asignar-seccion';
+    const etiqueta = claseExtra === 'seccion-en-curso' ? 'En ruta' : 'Pendientes';
+    header.innerHTML = `
+      <div class="admin-asignar-seccion-title"><strong>Asignar sección (${etiqueta})</strong></div>
+      <div class="admin-asignar-seccion-row">
+        <select class="admin-asignar-select" id="asignar-seccion-${claseExtra}">
+          ${opcionesSelectRepartidores({ assignedTo: null })}
+        </select>
+        <button type="button" class="btn-route btn-sm" onclick="asignarSeccionPedidos('${claseExtra}')">Asignar todos</button>
+      </div>
+    `;
+    seccion.appendChild(header);
+  }
 
   const contenido = document.createElement('div');
   contenido.className = 'pedidos-seccion-lista';
@@ -646,7 +1962,8 @@ function crearTarjetaPedido(pedido, index) {
     + (pedido.entregado ? " entregado" : "")
     + (pedido.enCurso && !pedido.entregado ? " en-curso" : "")
     + (pedido.cancelado ? " cancelado" : "");
-  div.draggable = !pedido.entregado && !pedido.cancelado;
+  const adminUi = esAdminVisual();
+  div.draggable = adminUi && !pedido.entregado && !pedido.cancelado;
   div.dataset.index = index;
   div.dataset.id = pedido.id;
 
@@ -693,12 +2010,22 @@ function crearTarjetaPedido(pedido, index) {
     ? (pedido.noEntregado ? ' - No entregado' : ' - Entregado')
     : (pedido.cancelado ? ' - Cancelado' : (pedido.enCurso ? (pedido.llegoDestino ? ' - En destino' : ' - En ruta') : ''));
 
+  const asignarHtml = adminUi && !pedido.entregado && !pedido.cancelado
+    ? `<div class="admin-asignar-pedido">
+        <strong>Asignar repartidor</strong>
+        <div class="admin-asignar-row">
+          <select class="admin-asignar-select" id="asignar-select-${pedido.id}">${opcionesSelectRepartidores(pedido)}</select>
+          <button type="button" class="btn-route btn-sm" onclick="asignarPedidoDesdeTarjeta(${pedido.id})">Asignar</button>
+        </div>
+      </div>`
+    : '';
+
   div.innerHTML = `
     <div class="pedido-header">
       <div class="pedido-numero">Pedido #${pedido.id}${estadoTexto}</div>
       <div class="pedido-header-btns">
         ${!pedido.cancelado ? `<button class="btn-edit" onclick="editarPedido(${index})" style="padding: 5px 10px; font-size: 12px;"><i class="fa-solid fa-pen-to-square"></i> Editar</button>` : ''}
-        <button class="btn-danger btn-icon-only" onclick="eliminarPedido(${index})" title="Eliminar pedido" aria-label="Eliminar pedido"><i class="fa-solid fa-trash"></i></button>
+        ${adminUi ? `<button class="btn-danger btn-icon-only" onclick="eliminarPedido(${index})" title="Eliminar pedido" aria-label="Eliminar pedido"><i class="fa-solid fa-trash"></i></button>` : ''}
       </div>
     </div>
     <div class="pedido-cliente">${pedido.nombre || 'Cliente no especificado'}</div>
@@ -711,6 +2038,7 @@ function crearTarjetaPedido(pedido, index) {
       <strong>Productos:</strong> ${pedido.productos && pedido.productos.length > 0 ? pedido.productos.join(', ') : 'No especificado'}<br>
       <strong>Valor:</strong> $${valorFormato}<br>
     </div>
+    ${asignarHtml}
     ${etapaActual === 'enDestino' ? `
     <div class="pedido-tools">
       <details class="pedido-dropdown">
@@ -765,7 +2093,7 @@ function renderListaOrdenEntrega() {
   pedidosActivos.forEach((pedido) => {
     const item = document.createElement('div');
     item.className = 'orden-item';
-    item.draggable = true;
+    item.draggable = esAdmin();
     item.dataset.id = pedido.id;
     item.textContent = `Pedido #${pedido.id}`;
 
@@ -856,12 +2184,26 @@ function handleOrdenDragEnd() {
 
 // --- Gestión de pedidos ---
 
-function eliminarPedido(index) {
-  if (confirm(`¿Estás seguro de eliminar el pedido #${pedidos[index].id}?`)) {
-    pedidos.splice(index, 1);
-    guardarPedidos();
-    renderPedidos();
-    actualizarMarcadores();
+async function eliminarPedido(index) {
+  if (!esAdmin()) {
+    alert('Solo el administrador puede eliminar pedidos.');
+    return;
+  }
+  const pedido = pedidos[index];
+  if (!pedido) return;
+  if (!confirm(`¿Estás seguro de eliminar el pedido #${pedido.id}?`)) return;
+  const id = pedido.id;
+  pedidos.splice(index, 1);
+  renderPedidos();
+  actualizarMarcadores();
+  if (supabaseCliente) {
+    const { error } = await supabaseCliente.from('pedidos').delete().eq('id', id);
+    if (error) {
+      alert('Error al eliminar en el servidor: ' + error.message);
+      await cargarPedidosDesdeSupabase();
+      renderPedidos();
+      actualizarMarcadores();
+    }
   }
 }
 
@@ -955,13 +2297,42 @@ function reactivarPedidoCancelado(index) {
   actualizarMarcadores();
 }
 
-function eliminarTodos() {
-  if (confirm("¿Estás seguro de eliminar TODOS los pedidos? Esta acción no se puede deshacer.")) {
+async function eliminarTodos() {
+  if (!esAdmin()) {
+    alert('Solo el administrador puede eliminar todos los pedidos.');
+    return;
+  }
+  if (!confirm("¿Estás seguro de eliminar TODOS los pedidos? Esta acción no se puede deshacer.")) return;
+  const prevPedidos = Array.isArray(pedidos) ? [...pedidos] : [];
+  const ids = prevPedidos.map((p) => p && p.id).filter((id) => id != null);
+
+  // Si no hay cliente o no hay nada que borrar, igual limpiamos cache/estado local.
+  if (!supabaseCliente || ids.length === 0) {
     pedidos = [];
-    guardarPedidos();
+    try { localStorage.removeItem(CACHE_PEDIDOS_KEY); } catch (_e) {}
+    guardarCachePedidos();
     renderPedidos();
     actualizarMarcadores();
+    return;
   }
+
+  const { error } = await supabaseCliente.from('pedidos').delete().in('id', ids);
+  if (error) {
+    alert('Error al eliminar en el servidor: ' + error.message);
+    // Revertir UI/local en caso de fallo.
+    pedidos = prevPedidos;
+    guardarCachePedidos();
+    renderPedidos();
+    actualizarMarcadores();
+    return;
+  }
+
+  // Borrado exitoso: limpiar estado y cache local para que no reaparezcan al recargar.
+  pedidos = [];
+  try { localStorage.removeItem(CACHE_PEDIDOS_KEY); } catch (_e) {}
+  guardarCachePedidos();
+  renderPedidos();
+  actualizarMarcadores();
 }
 
 // --- Editar pedido ---
@@ -1480,10 +2851,10 @@ function asegurarModalNoEntregado() {
   modal.innerHTML = `
     <div class="modal-no-entregado-card">
       <h3>No entregado</h3>
-      <p>Selecciona una opción:</p>
+      <p>Indica si estuviste en el punto de entrega (afecta el pago de $12.000 al delivery):</p>
       <div class="modal-no-entregado-actions">
-        <button class="btn-warning" onclick="confirmarNoEntregado(true)">Sí fui al punto</button>
-        <button class="btn-info" onclick="confirmarNoEntregado(false)">No fui al punto</button>
+        <button class="btn-warning" onclick="confirmarNoEntregado(true)">Estoy en el punto de entrega</button>
+        <button class="btn-info" onclick="confirmarNoEntregado(false)">No fui al punto de entrega</button>
       </div>
       <button class="modal-no-entregado-close" onclick="cerrarModalNoEntregado()">Cerrar</button>
     </div>
@@ -1811,26 +3182,11 @@ function finalizarEntregaConResultado(tipoFinalizacion) {
     return;
   }
 
-  const numeroAdmin = '573143473582';
   if (tipoFinalizacion === 'foto_no_entregado') {
-    const mensajeNoEntrega = `Pedido #${pedidoId} no entregado`;
-    window.open(`https://wa.me/${numeroAdmin}?text=${encodeURIComponent(mensajeNoEntrega)}`, '_blank');
-    pedidoFinal.noEntregado = true;
-    pedidoFinal.envioRecogido = true;
-  } else {
-    pedidoFinal.noEntregado = false;
-    pedidoFinal.envioRecogido = false;
+    noEntregadoPendiente = { index: indexFinal, pedidoId };
+    mostrarOpcionesNoEntregado(indexFinal, pedidoId);
+    return;
   }
-
-  pedidoFinal.entregado = true;
-  pedidoFinal.enCurso = false;
-  pedidoFinal.llegoDestino = false;
-  pedidoFinal.posicionPendiente = null;
-
-  guardarPedidos();
-  renderPedidos();
-  actualizarMarcadores();
-  notificarSiguientePedido(pedidoId);
 }
 
 // --- Notificar en camino ---
@@ -2102,260 +3458,105 @@ function procesarURLMapaPedido(url, pedidoId, productos, callback) {
   }
 }
 
-// --- Sincronización ---
+// --- Inicialización ---
 
-function compactarPedidos() {
-  return pedidos.map(p => [
-    p.id,
-    p.nombre || '',
-    p.telefono || '',
-    p.direccion || '',
-    p.valor || '0',
-    p.mapUrl || '',
-    (p.entregado ? 1 : 0) | (p.noEntregado ? 2 : 0) | (p.envioRecogido ? 4 : 0) | (p.enCurso ? 8 : 0) | (p.notificadoEnCamino ? 16 : 0) | (p.cancelado ? 32 : 0) | (p.llegoDestino ? 64 : 0),
-    (p.productos || []).join('|'),
-    (p.coords && Number.isFinite(p.coords.lat) && Number.isFinite(p.coords.lng))
-      ? `${p.coords.lat},${p.coords.lng}`
-      : '',
-    Number.isInteger(p.posicionPendiente) ? p.posicionPendiente : '',
-    p.metodoPagoEntrega || '',
-    Number(p.montoNequi || 0),
-    Number(p.montoDaviplata || 0),
-    Number(p.montoEfectivo || 0)
-  ]);
-}
-
-function descompactarPedidos(arr) {
-  return arr.map(c => {
-    const coordsTexto = c[8] || '';
-    let coords = null;
-    if (coordsTexto && typeof coordsTexto === 'string' && coordsTexto.includes(',')) {
-      const [latTxt, lngTxt] = coordsTexto.split(',');
-      const lat = Number(latTxt);
-      const lng = Number(lngTxt);
-      if (Number.isFinite(lat) && Number.isFinite(lng)) {
-        coords = { lat, lng };
-      }
-    }
-    return ({
-    id: c[0], nombre: c[1], telefono: c[2], direccion: c[3],
-    valor: c[4], mapUrl: c[5],
-    entregado: !!(c[6] & 1), noEntregado: !!(c[6] & 2), envioRecogido: !!(c[6] & 4), enCurso: !!(c[6] & 8), notificadoEnCamino: !!(c[6] & 16), cancelado: !!(c[6] & 32), llegoDestino: !!(c[6] & 64),
-    productos: c[7] ? c[7].split('|') : [], textoOriginal: '', coords,
-    posicionPendiente: Number.isInteger(Number(c[9])) ? Number(c[9]) : null,
-    metodoPagoEntrega: c[10] || '',
-    montoNequi: Number(c[11] || 0),
-    montoDaviplata: Number(c[12] || 0),
-    montoEfectivo: Number(c[13] || 0)
-  });
-  });
-}
-
-function uint8ToBase64(arr) {
-  let bin = '';
-  for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
-  return btoa(bin);
-}
-
-async function comprimirParaQR() {
-  const json = JSON.stringify(compactarPedidos());
-  if (typeof CompressionStream !== 'undefined') {
-    try {
-      const blob = new Blob([json]);
-      const stream = blob.stream().pipeThrough(new CompressionStream('deflate'));
-      const buf = await new Response(stream).arrayBuffer();
-      return 'CZ:' + uint8ToBase64(new Uint8Array(buf));
-    } catch (e) {}
+function normalizarPedidoEnMemoria(p) {
+  if (!p.hasOwnProperty('assignedTo')) p.assignedTo = null;
+  if (!p.hasOwnProperty('createdBy')) p.createdBy = null;
+  if (!p.hasOwnProperty('mapUrl')) p.mapUrl = '';
+  if (!p.hasOwnProperty('coords') || !p.coords) p.coords = null;
+  if (!p.hasOwnProperty('enCurso')) p.enCurso = false;
+  if (!p.hasOwnProperty('posicionPendiente')) p.posicionPendiente = null;
+  if (!p.hasOwnProperty('entregado')) p.entregado = false;
+  if (!p.hasOwnProperty('noEntregado')) p.noEntregado = false;
+  if (!p.hasOwnProperty('envioRecogido')) p.envioRecogido = false;
+  if (!p.hasOwnProperty('notificadoEnCamino')) p.notificadoEnCamino = false;
+  if (!p.hasOwnProperty('cancelado')) p.cancelado = false;
+  if (!p.hasOwnProperty('llegoDestino')) p.llegoDestino = false;
+  if (!p.hasOwnProperty('metodoPagoEntrega')) p.metodoPagoEntrega = '';
+  if (!p.hasOwnProperty('montoNequi')) p.montoNequi = 0;
+  if (!p.hasOwnProperty('montoDaviplata')) p.montoDaviplata = 0;
+  if (!p.hasOwnProperty('montoEfectivo')) p.montoEfectivo = 0;
+  if (p.entregado) {
+    p.enCurso = false;
+    p.llegoDestino = false;
+    p.posicionPendiente = null;
   }
-  return 'CC:' + btoa(unescape(encodeURIComponent(json)));
+  if (p.coords && (!Number.isFinite(Number(p.coords.lat)) || !Number.isFinite(Number(p.coords.lng)))) {
+    p.coords = null;
+  } else if (p.coords) {
+    p.coords = { lat: Number(p.coords.lat), lng: Number(p.coords.lng) };
+  }
+  return p;
 }
 
-async function descomprimirDatos(str) {
-  if (str.startsWith('CZ:')) {
-    const bytes = Uint8Array.from(atob(str.slice(3)), c => c.charCodeAt(0));
-    const blob = new Blob([bytes]);
-    const stream = blob.stream().pipeThrough(new DecompressionStream('deflate'));
-    return await new Response(stream).text();
+async function bootSesionYDatos() {
+  if (bootSesionEjecutando) {
+    bootSesionCola = true;
+    return;
   }
-  if (str.startsWith('CC:')) {
-    return decodeURIComponent(escape(atob(str.slice(3))));
-  }
-  return null;
-}
-
-async function exportarDatos() {
-  if (pedidos.length === 0) { alert('No hay pedidos para exportar'); return; }
-
-  const comprimido = await comprimirParaQR();
-  const syncArea = document.getElementById('syncCodeArea');
-  const syncData = document.getElementById('syncData');
-  syncArea.style.display = 'block';
-  syncData.value = comprimido;
-  syncData.select();
-
-  await mostrarQR();
-
-  const infoDiv = document.querySelector('.sync-info');
-  if (infoDiv) {
-    infoDiv.innerHTML = `
-      <strong>Opciones de sincronización:</strong><br>
-      1. Escanea el código QR con tu celular<br>
-      2. Copia el código de texto y pégalo en el otro dispositivo<br><br>
-      <strong>Total de pedidos:</strong> ${pedidos.length}`;
-  }
-
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(comprimido).catch(() => {});
-  }
-}
-
-function importarDatos() {
-  document.getElementById('syncCodeArea').style.display = 'block';
-  document.getElementById('syncData').focus();
-}
-
-async function aplicarImportacion() {
-  const input = document.getElementById('syncData').value.trim();
-  if (!input) { alert('Por favor, pega el código de sincronización'); return; }
-
+  bootSesionEjecutando = true;
   try {
-    let listaPedidos;
-
-    if (input.startsWith('CZ:') || input.startsWith('CC:')) {
-      const json = await descomprimirDatos(input);
-      listaPedidos = descompactarPedidos(JSON.parse(json));
-    } else {
-      const datos = JSON.parse(decodeURIComponent(escape(atob(input))));
-      if (!datos.pedidos || !Array.isArray(datos.pedidos)) throw new Error('Formato inválido');
-      listaPedidos = datos.pedidos;
+    if (sesionActiva) {
+      mostrarAppPrincipal();
     }
+    try {
+      await Promise.all([refrescarPerfilUsuario(), cargarPedidosDesdeSupabase()]);
+      if (sesionActiva) mostrarAppPrincipal();
 
-    if (!listaPedidos || listaPedidos.length === 0) throw new Error('No se encontraron pedidos');
-    if (!confirm(`¿Importar ${listaPedidos.length} pedido(s)?\n\nEsto reemplazará todos los pedidos actuales.`)) return;
+      if (esAdminVisual()) void cargarUsuariosParaAdmin();
+      pedidos = pedidos.map(normalizarPedidoEnMemoria);
+      if (pedidos.length > 0) {
+        nextPedidoId = Math.max(...pedidos.map(p => p.id), 0) + 1;
+      } else {
+        nextPedidoId = 1;
+      }
+      renderPedidos();
 
-    pedidos = listaPedidos.map(p => {
-      if (!p.hasOwnProperty('mapUrl')) p.mapUrl = '';
-      if (!p.hasOwnProperty('enCurso')) p.enCurso = false;
-      if (!p.hasOwnProperty('posicionPendiente')) p.posicionPendiente = null;
-      if (!p.hasOwnProperty('entregado')) p.entregado = false;
-      if (!p.hasOwnProperty('noEntregado')) p.noEntregado = false;
-      if (!p.hasOwnProperty('envioRecogido')) p.envioRecogido = false;
-      if (!p.hasOwnProperty('notificadoEnCamino')) p.notificadoEnCamino = false;
-      if (!p.hasOwnProperty('cancelado')) p.cancelado = false;
-      if (!p.hasOwnProperty('llegoDestino')) p.llegoDestino = false;
-      if (!p.hasOwnProperty('metodoPagoEntrega')) p.metodoPagoEntrega = '';
-      if (!p.hasOwnProperty('montoNequi')) p.montoNequi = 0;
-      if (!p.hasOwnProperty('montoDaviplata')) p.montoDaviplata = 0;
-      if (!p.hasOwnProperty('montoEfectivo')) p.montoEfectivo = 0;
-      if (p.entregado) p.posicionPendiente = null;
-      return p;
-    });
-
-    guardarPedidos();
-    renderPedidos();
-    setTimeout(() => actualizarMarcadores(), 500);
-
-    document.getElementById('syncCodeArea').style.display = 'none';
-    document.getElementById('qrContainer').style.display = 'none';
-    document.getElementById('syncData').value = '';
-    alert(`${pedidos.length} pedido(s) importado(s) exitosamente.`);
-  } catch (error) {
-    alert('Error al importar datos. Verifica que el código sea correcto.\n\nError: ' + error.message);
+      requestAnimationFrame(() => {
+        try {
+          if (!mapa) initMap();
+          else {
+            mapaAjustado = false;
+            actualizarMarcadores();
+            ajustarMapaConReintentos();
+          }
+          suscribirRealtimePedidos();
+        } catch (mapErr) {
+          console.error(mapErr);
+        }
+      });
+    } catch (err) {
+      console.error('bootSesionYDatos', err);
+      if (sesionActiva) mostrarAppPrincipal();
+    }
+  } finally {
+    bootSesionEjecutando = false;
+    if (bootSesionCola) {
+      bootSesionCola = false;
+      await bootSesionYDatos();
+    }
   }
 }
 
-async function mostrarQR() {
-  const qrContainer = document.getElementById('qrContainer');
-  const qrEl = document.getElementById('qrCode');
-
-  if (pedidos.length === 0) { alert('No hay pedidos para generar QR'); return; }
-
-  qrContainer.style.display = 'block';
-  qrEl.innerHTML = '<p style="padding:20px;text-align:center;">Comprimiendo datos...</p>';
-
-  const textoQR = await comprimirParaQR();
-
-  if (textoQR.length > 2900) {
-    qrEl.innerHTML = `
-      <p style="color:#E65100;padding:15px;background:#FFF3E0;border-radius:8px;font-size:14px;">
-        ⚠️ Datos muy grandes para QR aún comprimidos (${textoQR.length} chars).<br><br>
-        <strong>Alternativa:</strong> Copia el código de texto de arriba y pégalo en el otro dispositivo.
-      </p>`;
+async function iniciarAppSupabase() {
+  supabaseCliente = inicializarClienteSupabase();
+  exponerDebugAppDelivery();
+  if (!supabaseCliente) {
+    mostrarPantallaAuth();
     return;
   }
 
-  qrEl.innerHTML = '';
-  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-  const qrSize = isMobile ? 250 : 300;
-
+  // Pintar pedidos desde cache local de inmediato (antes de la red).
   try {
-    new QRCode(qrEl, {
-      text: textoQR,
-      width: qrSize,
-      height: qrSize,
-      colorDark: '#000000',
-      colorLight: '#ffffff',
-      correctLevel: QRCode.CorrectLevel.L
-    });
-  } catch (error) {
-    qrEl.innerHTML = `
-      <p style="color:#E65100;padding:15px;background:#FFF3E0;border-radius:8px;font-size:14px;">
-        ⚠️ No se pudo generar el QR.<br><br>
-        <strong>Alternativa:</strong> Copia el código de texto de arriba y pégalo en el otro dispositivo.
-      </p>`;
-  }
-}
-
-function verificarDatosEnURL() {
-  const datosURL = new URLSearchParams(window.location.search).get('data');
-  if (datosURL) {
-    if (confirm('¿Importar datos desde el enlace compartido?')) {
-      document.getElementById('syncData').value = datosURL;
-      aplicarImportacion();
-      window.history.replaceState({}, document.title, window.location.pathname);
+    const cache = cargarCachePedidos();
+    if (Array.isArray(cache) && cache.length > 0) {
+      pedidos = cache.map(normalizarPedidoEnMemoria);
+      nextPedidoId = Math.max(...pedidos.map((p) => p.id), 0) + 1;
     }
-  }
-}
+  } catch (_e) {}
 
-// --- Inicialización ---
-
-window.onload = function () {
-  pedidos = pedidos.map(p => {
-    if (!p.hasOwnProperty('mapUrl')) p.mapUrl = '';
-    if (!p.hasOwnProperty('coords') || !p.coords) p.coords = null;
-    if (!p.hasOwnProperty('enCurso')) p.enCurso = false;
-    if (!p.hasOwnProperty('posicionPendiente')) p.posicionPendiente = null;
-    if (!p.hasOwnProperty('entregado')) p.entregado = false;
-    if (!p.hasOwnProperty('noEntregado')) p.noEntregado = false;
-    if (!p.hasOwnProperty('envioRecogido')) p.envioRecogido = false;
-    if (!p.hasOwnProperty('notificadoEnCamino')) p.notificadoEnCamino = false;
-    if (!p.hasOwnProperty('cancelado')) p.cancelado = false;
-    if (!p.hasOwnProperty('llegoDestino')) p.llegoDestino = false;
-    if (!p.hasOwnProperty('metodoPagoEntrega')) p.metodoPagoEntrega = '';
-    if (!p.hasOwnProperty('montoNequi')) p.montoNequi = 0;
-    if (!p.hasOwnProperty('montoDaviplata')) p.montoDaviplata = 0;
-    if (!p.hasOwnProperty('montoEfectivo')) p.montoEfectivo = 0;
-    if (p.entregado) {
-      p.enCurso = false;
-      p.llegoDestino = false;
-      p.posicionPendiente = null;
-    }
-    if (p.coords && (!Number.isFinite(Number(p.coords.lat)) || !Number.isFinite(Number(p.coords.lng)))) {
-      p.coords = null;
-    } else if (p.coords) {
-      p.coords = { lat: Number(p.coords.lat), lng: Number(p.coords.lng) };
-    }
-    return p;
-  });
-  guardarPedidos();
   cargarConfigNotificacionEnUI();
-  const btnConfig = document.getElementById('btnConfigNotificacion');
-  if (btnConfig) {
-    btnConfig.addEventListener('click', (e) => {
-      e.preventDefault();
-      abrirConfigNotificacion();
-    });
-  }
   const modalConfig = document.getElementById('modalConfigNotificacion');
   if (modalConfig) {
     modalConfig.addEventListener('click', (e) => {
@@ -2363,11 +3564,107 @@ window.onload = function () {
     });
   }
 
-  if (pedidos.length > 0) {
-    nextPedidoId = Math.max(...pedidos.map(p => p.id)) + 1;
-  }
+  document.addEventListener('click', (ev) => {
+    const wrap = document.querySelector('.app-header-menu-wrap');
+    if (wrap && !wrap.contains(ev.target)) cerrarMenuUsuario();
+  });
 
-  renderPedidos();
-  initMap();
-  verificarDatosEnURL();
+  mostrarAuthComprobandoSesion();
+
+  supabaseCliente.auth.onAuthStateChange(async (event, session) => {
+    if (event === 'INITIAL_SESSION') {
+      sesionActiva = session || null;
+      // En recarga, esta es la ruta correcta para arrancar. No dependas de getSession(),
+      // porque en algunos entornos puede quedarse colgado por locks/concurrencia.
+      if (!sesionActiva) {
+        perfilUsuario = null;
+        pedidos = [];
+        mostrarPantallaAuth();
+        return;
+      }
+      // Asegura que el cliente tenga la sesión cargada en memoria para adjuntar JWT en REST/RPC.
+      try { await supabaseCliente.auth.setSession(sesionActiva); } catch (_e) {}
+      if (wasLoginScreenBeforeReload()) {
+        mostrarPantallaAuth();
+        return;
+      }
+      try {
+        await bootSesionYDatos();
+        // Refuerzo: a veces la lista de usuarios admin no entra en el primer tick tras recargar.
+        setTimeout(() => { if (esAdminVisual()) void cargarUsuariosParaAdmin(); }, 1200);
+      } catch (e) {
+        console.error(e);
+        if (sesionActiva) mostrarAppPrincipal();
+      }
+      return;
+    }
+    if (event === 'SIGNED_IN' && enFlujoLoginManual) {
+      sesionActiva = session;
+      return;
+    }
+    sesionActiva = session;
+    if (!session) {
+      perfilUsuario = null;
+      pedidos = [];
+      mostrarPantallaAuth();
+      return;
+    }
+    // Si el usuario estaba en login y recargó, NO auto-entrar aunque exista sesión persistida.
+    if (wasLoginScreenBeforeReload()) {
+      // Importante: no dejar el UI en “Comprobando sesión…”
+      mostrarPantallaAuth();
+      return;
+    }
+    if (event === 'TOKEN_REFRESHED') return;
+    if (event === 'USER_UPDATED') {
+      await refrescarPerfilUsuario();
+      mostrarAppPrincipal();
+      return;
+    }
+    try {
+      await bootSesionYDatos();
+    } catch (e) {
+      console.error(e);
+      if (sesionActiva) mostrarAppPrincipal();
+    }
+  });
+
+  try {
+    const { session: sesionDesdeGet, error } = await obtenerSesionInicialConTimeout(6000);
+    if (error) {
+      console.error(error);
+    }
+    // Si getSession() tarda más que el timeout, INITIAL_SESSION / SIGNED_IN ya pueden haber
+    // rellenado sesionActiva; no sobrescribir con null (evita “entré y a los segundos me sacó”).
+    const sesionFinal = sesionDesdeGet ?? sesionActiva;
+    sesionActiva = sesionFinal || null;
+    if (sesionFinal) {
+      if (wasLoginScreenBeforeReload()) {
+        // Mantener login si el usuario estaba en login antes de recargar (sin quedarse en “Comprobando sesión…”).
+        mostrarPantallaAuth();
+        return;
+      }
+      try {
+        await bootSesionYDatos();
+      } catch (e) {
+        console.error(e);
+        mostrarAppPrincipal();
+      }
+    } else {
+      mostrarPantallaAuth();
+    }
+  } catch (e) {
+    console.error(e);
+    mostrarPantallaAuth();
+  }
+}
+
+window.onload = function () {
+  void iniciarAppSupabase();
 };
+
+// Flush de pedidos al salir/recargar pestaña.
+window.addEventListener('pagehide', () => {
+  enSalidaDePagina = true;
+  try { void persistPedidosToSupabase({ silent: true, keepalive: true }); } catch (_e) {}
+});
