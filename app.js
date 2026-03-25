@@ -13,6 +13,12 @@ let enFlujoLoginManual = false;
 let refrescoPerfilEnCurso = false;
 let cargaUsuariosAdminEnCurso = false;
 let enSalidaDePagina = false;
+/** Evita segundo boot completo cuando INITIAL_SESSION y getSession() disparan arranque en la misma recarga. */
+let ultimoBootExitosoPorUsuario = { userId: null, ts: 0 };
+
+function reiniciarMarcaUltimoBoot() {
+  ultimoBootExitosoPorUsuario = { userId: null, ts: 0 };
+}
 
 // Exponer estado mínimo para depuración desde consola (no incluye keys).
 function exponerDebugAppDelivery() {
@@ -1529,6 +1535,7 @@ async function registrarUsuario() {
 async function cerrarSesion() {
   cerrarMenuUsuario();
   const client = supabaseCliente;
+  reiniciarMarcaUltimoBoot();
   const uid = sesionActiva?.user?.id;
   limpiarCachePedidosUsuario(uid);
   pedidos = [];
@@ -3700,9 +3707,26 @@ async function bootSesionYDatos() {
     bootSesionCola = true;
     return;
   }
+  const uidEvitarDoble = sesionActiva?.user?.id;
+  if (
+    uidEvitarDoble &&
+    uidEvitarDoble === ultimoBootExitosoPorUsuario.userId &&
+    Date.now() - ultimoBootExitosoPorUsuario.ts < 5000 &&
+    Array.isArray(pedidos) &&
+    pedidos.length > 0
+  ) {
+    try {
+      renderPedidos();
+      actualizarMarcadores();
+    } catch (e) {
+      console.error('[app-delivery] re-render tras boot reciente', e);
+    }
+    return;
+  }
   bootSesionEjecutando = true;
   try {
     try {
+      if (sesionActiva?.user?.id) marcarPantallaMain();
       if (sesionActiva?.user?.id) {
         try { localStorage.removeItem(CACHE_PEDIDOS_LEGACY_KEY); } catch (_e) {}
         const cachePrevio = cargarCachePedidos();
@@ -3712,6 +3736,9 @@ async function bootSesionYDatos() {
         }
       }
       await refrescarPerfilUsuario();
+      try {
+        await aplicarPerfilAdminSiIsAdminRpc();
+      } catch (_e) {}
       // Cargar pedidos después del perfil: evita RLS/carreras donde el primer SELECT ve 0 filas.
       for (let i = 0; i < 4; i++) {
         await cargarPedidosDesdeSupabase();
@@ -3720,7 +3747,7 @@ async function bootSesionYDatos() {
         if (!podriaSerAdmin) break;
         if (i < 3) await pausaMs(220 + i * 220);
       }
-      if (esAdminVisual()) await cargarUsuariosParaAdmin();
+      if (esAdmin() || esAdminVisual()) await cargarUsuariosParaAdmin();
       if (sesionActiva) mostrarAppPrincipal();
       pedidos = pedidos.map(normalizarPedidoEnMemoria);
       if (pedidos.length > 0) {
@@ -3729,6 +3756,26 @@ async function bootSesionYDatos() {
         nextPedidoId = 1;
       }
       renderPedidos();
+
+      if (pedidos.length > 0) {
+        ultimoBootExitosoPorUsuario.userId = sesionActiva?.user?.id ?? null;
+        ultimoBootExitosoPorUsuario.ts = Date.now();
+      }
+
+      setTimeout(() => {
+        if (!sesionActiva?.user?.id) return;
+        void (async () => {
+          try {
+            if (!esAdmin() && !esAdminVisual()) return;
+            await aplicarPerfilAdminSiIsAdminRpc();
+            await cargarUsuariosParaAdmin();
+            renderPedidos();
+            actualizarMarcadores();
+          } catch (e) {
+            console.error('[app-delivery] refuerzo usuarios/render tras boot', e);
+          }
+        })();
+      }, 450);
 
       requestAnimationFrame(() => {
         try {
@@ -3813,6 +3860,7 @@ async function iniciarAppSupabase() {
     const uidAnterior = sesionActiva?.user?.id;
     sesionActiva = session;
     if (!session) {
+      reiniciarMarcaUltimoBoot();
       limpiarCachePedidosUsuario(uidAnterior);
       perfilUsuario = null;
       pedidos = [];
@@ -3852,6 +3900,16 @@ async function iniciarAppSupabase() {
       if (wasLoginScreenBeforeReload()) {
         // Mantener login si el usuario estaba en login antes de recargar (sin quedarse en “Comprobando sesión…”).
         mostrarPantallaAuth();
+        return;
+      }
+      const uidFin = sesionFinal.user?.id ?? null;
+      if (
+        uidFin &&
+        uidFin === ultimoBootExitosoPorUsuario.userId &&
+        Date.now() - ultimoBootExitosoPorUsuario.ts < 5000 &&
+        pedidos.length > 0
+      ) {
+        // INITIAL_SESSION ya ejecutó bootSesionYDatos en esta recarga.
         return;
       }
       try {
