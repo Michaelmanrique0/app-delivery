@@ -108,16 +108,44 @@ let vistaPedidosActual = 'pendientes';
 let vistaPedidosSeleccionadaManual = false;
 const TELEFONO_SOPORTE = '3213153165';
 const CONFIG_NOTIFICACION_KEY = 'configNotificacionPago';
-const CACHE_USUARIOS_ADMIN_KEY = 'cacheUsuariosAdmin_v1';
-/** @deprecated Caché global; la app usa caché por usuario (ver keyCachePedidosUser). Se limpia al boot por compatibilidad. */
+/** Pedidos en este dispositivo (sin login). */
+const CACHE_PEDIDOS_KEY = 'cachePedidos_v1';
+/** Misma clave que antes; datos por usuario vivían en `cachePedidos_v1_<uuid>`. */
 const CACHE_PEDIDOS_LEGACY_KEY = 'cachePedidos_v1';
 
-function keyCachePedidosUser(userId) {
-  if (!userId) return null;
-  return `cachePedidos_v1_${String(userId)}`;
+function exponerDebugAppDelivery() {
+  try {
+    window.__appDelivery = {
+      recargarPedidos: () => {
+        cargarPedidosDesdeLocalStorage();
+        renderPedidos();
+      },
+    };
+  } catch (_e) {}
 }
 
-/** UUID en minúsculas para coincidir con auth.uid() y columnas uuid en Postgres. */
+function migrarCachePedidosDesdeClavesAntiguas() {
+  try {
+    if (localStorage.getItem(CACHE_PEDIDOS_KEY)) return;
+    const legacy = localStorage.getItem(CACHE_PEDIDOS_LEGACY_KEY);
+    if (legacy) {
+      localStorage.setItem(CACHE_PEDIDOS_KEY, legacy);
+      return;
+    }
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && /^cachePedidos_v1_/.test(k)) {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          localStorage.setItem(CACHE_PEDIDOS_KEY, raw);
+          return;
+        }
+      }
+    }
+  } catch (_e) {}
+}
+
+/** Normaliza texto tipo UUID en asignaciones legacy (import). */
 function normalizarUuidAsignacion(raw) {
   if (raw == null) return null;
   const s = String(raw).trim();
@@ -125,11 +153,10 @@ function normalizarUuidAsignacion(raw) {
   return s.toLowerCase();
 }
 
-function limpiarCachePedidosUsuario(userId) {
+function limpiarCachePedidosLocal() {
   try {
+    localStorage.removeItem(CACHE_PEDIDOS_KEY);
     localStorage.removeItem(CACHE_PEDIDOS_LEGACY_KEY);
-    const k = keyCachePedidosUser(userId);
-    if (k) localStorage.removeItem(k);
   } catch (_e) {}
 }
 const CONFIG_NOTIFICACION_DEFAULT = {
@@ -141,31 +168,6 @@ const CONFIG_NOTIFICACION_DEFAULT = {
 };
 
 let configNotificacionPago = cargarConfigNotificacionPago();
-
-function cargarCacheUsuariosAdmin() {
-  try {
-    const raw = localStorage.getItem(CACHE_USUARIOS_ADMIN_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((x) => x && x.id);
-  } catch (_e) {
-    return [];
-  }
-}
-
-function guardarCacheUsuariosAdmin() {
-  try {
-    const compact = (usuariosRegistrados || []).map((u) => ({
-      id: u.id,
-      email: u.email || '',
-      full_name: u.full_name || '',
-      role: u.role || '',
-      created_at: u.created_at || null
-    }));
-    localStorage.setItem(CACHE_USUARIOS_ADMIN_KEY, JSON.stringify(compact));
-  } catch (_e) {}
-}
 
 function cargarConfigNotificacionPago() {
   try {
@@ -198,9 +200,7 @@ function guardarConfigNotificacionPago() {
 
 function cargarCachePedidos() {
   try {
-    const k = keyCachePedidosUser(sesionActiva?.user?.id);
-    if (!k) return [];
-    const raw = localStorage.getItem(k);
+    const raw = localStorage.getItem(CACHE_PEDIDOS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -212,23 +212,37 @@ function cargarCachePedidos() {
 
 function guardarCachePedidos() {
   try {
-    const k = keyCachePedidosUser(sesionActiva?.user?.id);
-    if (!k) return;
     const lista = Array.isArray(pedidos) ? pedidos : [];
     const dedup = deduplicarPedidosPorId(lista);
-    localStorage.setItem(k, JSON.stringify(dedup));
-  } catch (_e) {}
+    localStorage.setItem(CACHE_PEDIDOS_KEY, JSON.stringify(dedup));
+  } catch (err) {
+    console.error('[app-delivery] No se pudo guardar en localStorage:', err);
+    alert(
+      'No se pudieron guardar los pedidos en este navegador. Revisa el modo privado o que no esté bloqueado el almacenamiento local.'
+    );
+  }
 }
 
+/** Quita duplicados por id conservando el orden del array (datos: gana la última aparición de cada id). */
 function deduplicarPedidosPorId(lista) {
+  const arr = Array.isArray(lista) ? lista : [];
   const map = new Map();
-  (Array.isArray(lista) ? lista : []).forEach((p) => {
+  arr.forEach((p) => {
     const id = p && p.id != null ? Number(p.id) : null;
     if (!id || !Number.isFinite(id)) return;
-    // Último gana: si hay duplicado, conservamos el más reciente en el array.
     map.set(id, p);
   });
-  return Array.from(map.values()).sort((a, b) => Number(a.id) - Number(b.id));
+  const seen = new Set();
+  const out = [];
+  arr.forEach((p) => {
+    const id = p && p.id != null ? Number(p.id) : null;
+    if (!id || !Number.isFinite(id)) return;
+    if (seen.has(id)) return;
+    seen.add(id);
+    const ultimo = map.get(id);
+    if (ultimo) out.push(ultimo);
+  });
+  return out;
 }
 
 function actualizarVisibilidadConfigNotificacion() {
@@ -267,8 +281,6 @@ function cargarConfigNotificacionEnUI() {
 }
 
 function abrirConfigNotificacion() {
-  // Admin no configura medios de pago para notificación del cliente.
-  if (esAdminVisual()) return;
   cargarConfigNotificacionEnUI();
   const modal = document.getElementById('modalConfigNotificacion');
   if (!modal) return;
@@ -283,13 +295,29 @@ function cerrarConfigNotificacion() {
   modal.style.display = 'none';
 }
 
+function cerrarMenuUsuario() {
+  const panel = document.getElementById('menuUsuarioPanel');
+  const btn = document.getElementById('btnMenuUsuario');
+  if (panel) panel.style.display = 'none';
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+function toggleMenuUsuario(ev) {
+  if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+  const panel = document.getElementById('menuUsuarioPanel');
+  const btn = document.getElementById('btnMenuUsuario');
+  if (!panel || !btn) return;
+  const abierto = panel.style.display === 'block';
+  panel.style.display = abierto ? 'none' : 'block';
+  btn.setAttribute('aria-expanded', abierto ? 'false' : 'true');
+}
+
 function abrirConfigNotificacionDesdeMenu() {
   cerrarMenuUsuario();
   abrirConfigNotificacion();
 }
 
 function guardarConfigNotificacionDesdeUI(mostrarMensaje = true) {
-  if (esAdminVisual()) return;
   const tieneNequi = document.getElementById('cfgTieneNequi');
   const tieneDaviplata = document.getElementById('cfgTieneDaviplata');
   const numeroDigital = document.getElementById('cfgNumeroDigital');
@@ -360,94 +388,10 @@ function abrirWhatsAppConTexto(telefono, mensaje) {
   window.open(url, '_blank');
 }
 
-function esAdmin() {
-  if (!sesionActiva || !perfilUsuario) return false;
-  const r = String(perfilUsuario.role ?? '').toLowerCase().trim();
-  return r === 'admin';
-}
-
-function syncMainAdminClass() {
-  const mainAppEl = document.getElementById('mainApp');
-  const secPegar = document.getElementById('sectionPegarPedido');
-  const admin = esAdminVisual();
-  if (mainAppEl) {
-    mainAppEl.classList.toggle('app-es-admin', admin);
-  }
-  if (secPegar) {
-    secPegar.style.setProperty('display', admin ? 'block' : 'none', 'important');
-  }
-  if (esAdmin() && sesionActiva?.user?.id) {
-    marcarHintAdminSesion(sesionActiva.user.id);
-  }
-}
-
-// Supabase exige un email interno: si el usuario no escribe @, se usa un dominio reservado (.invalid).
-const DOMINIO_USUARIO_INTERNO = 'users.app-delivery.invalid';
-
-function emailDesdeCampoUsuario(usuarioRaw) {
-  const u = String(usuarioRaw || '').trim();
-  if (!u) return '';
-  if (u.includes('@')) return u.toLowerCase();
-  const slug = u
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  if (!slug) return '';
-  return `${slug}@${DOMINIO_USUARIO_INTERNO}`;
-}
-
-function usuarioLoginVisible(email) {
-  const mail = String(email || '');
-  const sufijo = `@${DOMINIO_USUARIO_INTERNO}`;
-  if (mail.endsWith(sufijo)) return mail.slice(0, -sufijo.length);
-  return mail;
-}
-
-function etiquetaUsuarioEnCabecera() {
-  if (!perfilUsuario) return '';
-  const nombre = (perfilUsuario.full_name || '').trim();
-  if (nombre) return nombre;
-  const mail = String(perfilUsuario.email || '');
-  if (mail.endsWith(`@${DOMINIO_USUARIO_INTERNO}`)) return usuarioLoginVisible(mail);
-  return 'Usuario';
-}
-
-/** Nombre del registro (metadata o perfil); nunca muestra un correo con @. */
-function nombreRegistradoDesdeAuthUser() {
-  const u = sesionActiva?.user;
-  if (!u) return '';
-  const meta = u.user_metadata;
-  const n = meta && typeof meta.full_name === 'string' ? meta.full_name.trim() : '';
-  if (n) return n;
-  const mail = String(u.email || '');
-  if (mail.endsWith(`@${DOMINIO_USUARIO_INTERNO}`)) return usuarioLoginVisible(mail);
-  return 'Usuario';
-}
-
-function nombreMetaSesion() {
-  const m = sesionActiva?.user?.user_metadata;
-  const n = m && typeof m.full_name === 'string' ? m.full_name.trim() : '';
-  return n || '';
-}
-
-function nombreParaMenuUsuario() {
-  const meta = nombreMetaSesion();
-  if (perfilUsuario) {
-    const n = (perfilUsuario.full_name || '').trim();
-    if (n) return n;
-    if (meta) return meta;
-    const mail = String(perfilUsuario.email || '');
-    if (mail.endsWith(`@${DOMINIO_USUARIO_INTERNO}`)) return usuarioLoginVisible(mail);
-    return 'Usuario';
-  }
-  if (meta) return meta;
-  return nombreRegistradoDesdeAuthUser();
-}
-
 function pedidoNuevoBase() {
   return {
     assignedTo: null,
-    createdBy: sesionActiva?.user?.id ?? null,
+    createdBy: null,
     enCurso: false,
     posicionPendiente: null,
     entregado: false,
@@ -1756,10 +1700,6 @@ async function obtenerCoordenadas(url, direccion) {
 }
 
 async function procesarPedido() {
-  if (!esAdmin()) {
-    alert('Solo el administrador puede crear pedidos.');
-    return;
-  }
   const texto = document.getElementById("textoPedido").value.trim();
   if (!texto) {
     alert("Por favor, pega el formato del pedido");
@@ -1835,10 +1775,6 @@ async function procesarPedido() {
 }
 
 async function procesarMultiplesPedidos(texto) {
-  if (!esAdmin()) {
-    alert('Solo el administrador puede crear pedidos.');
-    return;
-  }
   const textoLimpio = limpiarTimestampsChat(texto);
   const bloques = textoLimpio.split(/¿Todo en orden\?\s*😊?\s*/);
   const urlsGlobal = extraerTodasLasUrlsMapsEnTexto(textoLimpio);
@@ -1919,10 +1855,7 @@ function cancelarPersistPedidosPendiente() {
 }
 
 function guardarPedidos() {
-  if (!supabaseCliente || !sesionActiva) return;
-  // Evita duplicados por carreras de cache/red.
   pedidos = deduplicarPedidosPorId(pedidos);
-  // Persistencia inmediata local para que no desaparezca al recargar.
   guardarCachePedidos();
   cancelarPersistPedidosPendiente();
   persistTimeoutId = setTimeout(() => {
@@ -1999,9 +1932,7 @@ function renderPedidosContenido(lista) {
   if (pedidos.length === 0) {
     vistaPedidosActual = 'pendientes';
     vistaPedidosSeleccionadaManual = false;
-    const subVacio = esAdmin()
-      ? 'Pega un formato de pedido arriba para comenzar'
-      : 'Los pedidos aparecerán aquí cuando el administrador los cree y te asigne.';
+    const subVacio = 'Pega un formato de pedido arriba o importa un respaldo JSON.';
     lista.innerHTML = `<div class="empty-state" id="emptyState"><p>No hay pedidos aún</p><p style="font-size: 14px;">${escapeHtmlAttr(subVacio)}</p></div>`;
     actualizarPestañasListaPedidos([], [], [], []);
     renderListaOrdenEntrega();
@@ -2088,24 +2019,6 @@ function crearSeccionPedidos(claseExtra, items, textoVacio) {
   const seccion = document.createElement('div');
   seccion.className = `pedidos-seccion ${claseExtra}`;
 
-  const adminUi = esAdminVisual();
-  const permitirAsignacionMasiva = adminUi && items.length > 0 && (claseExtra === 'seccion-pendientes' || claseExtra === 'seccion-en-curso');
-  if (permitirAsignacionMasiva) {
-    const header = document.createElement('div');
-    header.className = 'admin-asignar-seccion';
-    const etiqueta = claseExtra === 'seccion-en-curso' ? 'En ruta' : 'Pendientes';
-    header.innerHTML = `
-      <div class="admin-asignar-seccion-title"><strong>Asignar sección (${etiqueta})</strong></div>
-      <div class="admin-asignar-seccion-row">
-        <select class="admin-asignar-select" id="asignar-seccion-${claseExtra}">
-          ${opcionesSelectRepartidores({ assignedTo: null })}
-        </select>
-        <button type="button" class="btn-route btn-sm" onclick="asignarSeccionPedidos('${claseExtra}')">Asignar todos</button>
-      </div>
-    `;
-    seccion.appendChild(header);
-  }
-
   const contenido = document.createElement('div');
   contenido.className = 'pedidos-seccion-lista';
 
@@ -2136,8 +2049,8 @@ function crearTarjetaPedido(pedido, index) {
     + (pedido.entregado ? " entregado" : "")
     + (pedido.enCurso && !pedido.entregado ? " en-curso" : "")
     + (pedido.cancelado ? " cancelado" : "");
-  const adminUi = esAdminVisual();
-  div.draggable = adminUi && !pedido.entregado && !pedido.cancelado;
+  const adminUi = true;
+  div.draggable = !pedido.entregado && !pedido.cancelado;
   div.dataset.index = index;
   div.dataset.id = pedido.id;
 
@@ -2184,16 +2097,6 @@ function crearTarjetaPedido(pedido, index) {
     ? (pedido.noEntregado ? ' - No entregado' : ' - Entregado')
     : (pedido.cancelado ? ' - Cancelado' : (pedido.enCurso ? (pedido.llegoDestino ? ' - En destino' : ' - En ruta') : ''));
 
-  const asignarHtml = adminUi && !pedido.entregado && !pedido.cancelado
-    ? `<div class="admin-asignar-pedido">
-        <strong>Asignar repartidor</strong>
-        <div class="admin-asignar-row">
-          <select class="admin-asignar-select" id="asignar-select-${pedido.id}">${opcionesSelectRepartidores(pedido)}</select>
-          <button type="button" class="btn-route btn-sm" onclick="asignarPedidoDesdeTarjeta(${pedido.id})">Asignar</button>
-        </div>
-      </div>`
-    : '';
-
   div.innerHTML = `
     <div class="pedido-header">
       <div class="pedido-numero">Pedido #${pedido.id}${estadoTexto}</div>
@@ -2212,7 +2115,6 @@ function crearTarjetaPedido(pedido, index) {
       <strong>Productos:</strong> ${Array.isArray(pedido.productos) && pedido.productos.length > 0 ? pedido.productos.map((x) => escapeHtmlAttr(String(x))).join(', ') : 'No especificado'}<br>
       <strong>Valor:</strong> $${valorFormato}<br>
     </div>
-    ${asignarHtml}
     ${etapaActual === 'enDestino' ? `
     <div class="pedido-tools">
       <details class="pedido-dropdown">
@@ -2267,22 +2169,58 @@ function renderListaOrdenEntrega() {
   pedidosActivos.forEach((pedido) => {
     const item = document.createElement('div');
     item.className = 'orden-item';
-    item.draggable = esAdmin();
-    item.dataset.id = pedido.id;
-    item.textContent = `Pedido #${pedido.id}`;
+    item.dataset.id = String(pedido.id);
+    item.draggable = false;
 
-    item.addEventListener('dragstart', handleOrdenDragStart);
-    item.addEventListener('dragover', handleOrdenDragOver);
-    item.addEventListener('drop', handleOrdenDrop);
-    item.addEventListener('dragend', handleOrdenDragEnd);
+    const texto = document.createElement('span');
+    texto.className = 'orden-item-text';
+    texto.textContent = `Pedido #${pedido.id}`;
+
+    const acciones = document.createElement('span');
+    acciones.className = 'orden-item-acciones';
+    const mkBtn = (delta, sym, titulo) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.draggable = false;
+      b.className = 'orden-flecha';
+      b.textContent = sym;
+      b.title = titulo;
+      b.setAttribute('aria-label', titulo);
+      b.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        moverPedidoUnPasoEnOrdenActiva(pedido.id, delta);
+      });
+      return b;
+    };
+    acciones.appendChild(mkBtn(-1, '▲', 'Subir en la ruta'));
+    acciones.appendChild(mkBtn(1, '▼', 'Bajar en la ruta'));
+
+    item.appendChild(texto);
+    item.appendChild(acciones);
 
     listaOrden.appendChild(item);
   });
 }
 
+/** Mueve un pedido activo una posición arriba/abajo en la lista de ruta (mismo criterio que el panel lateral). */
+function moverPedidoUnPasoEnOrdenActiva(pedidoId, delta) {
+  const activos = pedidos.filter((p) => !p.entregado && !p.cancelado);
+  const i = activos.findIndex((p) => p.id === pedidoId);
+  if (i < 0) return;
+  const j = i + delta;
+  if (j < 0 || j >= activos.length) return;
+  const targetId = activos[j].id;
+  if (moverPedidoPorId(pedidoId, targetId)) {
+    guardarPedidos();
+    renderPedidos();
+    actualizarMarcadores();
+  }
+}
+
 function moverPedidoPorId(draggedId, targetId) {
-  const draggedIndex = pedidos.findIndex(p => p.id === draggedId);
-  const targetIndex = pedidos.findIndex(p => p.id === targetId);
+  const draggedIndex = pedidos.findIndex((p) => Number(p.id) === Number(draggedId));
+  const targetIndex = pedidos.findIndex((p) => Number(p.id) === Number(targetId));
   if (draggedIndex < 0 || targetIndex < 0 || draggedIndex === targetIndex) return false;
 
   const [removed] = pedidos.splice(draggedIndex, 1);
@@ -2290,15 +2228,159 @@ function moverPedidoPorId(draggedId, targetId) {
   return true;
 }
 
+/** Inserta el pedido inmediatamente antes de `beforeId` (tras quitar el arrastrado del array). */
+function moverPedidoAntesDeId(draggedId, beforeId) {
+  if (Number(draggedId) === Number(beforeId)) return false;
+  const draggedIndex = pedidos.findIndex((p) => Number(p.id) === Number(draggedId));
+  if (draggedIndex < 0) return false;
+  const [removed] = pedidos.splice(draggedIndex, 1);
+  const insertAt = pedidos.findIndex((p) => Number(p.id) === Number(beforeId));
+  if (insertAt < 0) {
+    pedidos.splice(draggedIndex, 0, removed);
+    return false;
+  }
+  pedidos.splice(insertAt, 0, removed);
+  return true;
+}
+
+/** Inserta el pedido inmediatamente después de `afterId` (tras quitar el arrastrado del array). */
+function moverPedidoDespuesDeId(draggedId, afterId) {
+  if (Number(draggedId) === Number(afterId)) return false;
+  const draggedIndex = pedidos.findIndex((p) => Number(p.id) === Number(draggedId));
+  if (draggedIndex < 0) return false;
+  const [removed] = pedidos.splice(draggedIndex, 1);
+  let insertAt = pedidos.findIndex((p) => Number(p.id) === Number(afterId));
+  if (insertAt < 0) {
+    pedidos.splice(draggedIndex, 0, removed);
+    return false;
+  }
+  insertAt += 1;
+  pedidos.splice(insertAt, 0, removed);
+  return true;
+}
+
+function ordenItemInsertBeforeDesdeClienteY(listaOrden, clientY) {
+  const els = [...listaOrden.querySelectorAll('.orden-item:not(.dragging)')];
+  for (const el of els) {
+    const r = el.getBoundingClientRect();
+    if (clientY < r.top + r.height / 2) return el;
+  }
+  return null;
+}
+
+let ordenEntregaArrastre = null;
+
+function aplicarReordenListaOrdenSegunY(listaOrden, clientY, draggedId) {
+  const beforeEl = ordenItemInsertBeforeDesdeClienteY(listaOrden, clientY);
+  let ok = false;
+  if (beforeEl) {
+    const beforeId = parseInt(beforeEl.dataset.id, 10);
+    if (Number.isFinite(beforeId)) ok = moverPedidoAntesDeId(draggedId, beforeId);
+  } else {
+    const items = [...listaOrden.querySelectorAll('.orden-item:not(.dragging)')];
+    const last = items[items.length - 1];
+    if (last) {
+      const afterId = parseInt(last.dataset.id, 10);
+      if (Number.isFinite(afterId)) ok = moverPedidoDespuesDeId(draggedId, afterId);
+    }
+  }
+  if (ok) {
+    guardarPedidos();
+    renderPedidos();
+    actualizarMarcadores();
+  }
+  return ok;
+}
+
+function ordenItemPointerMove(e) {
+  if (!ordenEntregaArrastre || e.pointerId !== ordenEntregaArrastre.pointerId) return;
+  e.preventDefault();
+}
+
+function ordenItemPointerEnd(e) {
+  if (!ordenEntregaArrastre || e.pointerId !== ordenEntregaArrastre.pointerId) return;
+  const snap = ordenEntregaArrastre;
+  ordenEntregaArrastre = null;
+
+  const { itemEl, lista, pedidoId, pointerId, startX, startY } = snap;
+  itemEl.removeEventListener('pointermove', ordenItemPointerMove);
+  itemEl.removeEventListener('pointerup', ordenItemPointerEnd);
+  itemEl.removeEventListener('pointercancel', ordenItemPointerEnd);
+
+  itemEl.classList.remove('dragging');
+  try {
+    itemEl.releasePointerCapture(pointerId);
+  } catch (_err) {}
+
+  const dx = e.clientX - startX;
+  const dy = e.clientY - startY;
+  if (dx * dx + dy * dy < 36) return;
+
+  const panel = lista.closest('.orden-entrega-panel');
+  const bounds = (panel || lista).getBoundingClientRect();
+  if (e.clientX < bounds.left || e.clientX > bounds.right || e.clientY < bounds.top || e.clientY > bounds.bottom) {
+    return;
+  }
+
+  aplicarReordenListaOrdenSegunY(lista, e.clientY, pedidoId);
+}
+
+function ordenListaPointerDown(e) {
+  const lista = document.getElementById('listaOrdenEntrega');
+  if (!lista || e.currentTarget !== lista) return;
+  const item = e.target.closest && e.target.closest('.orden-item');
+  if (!item || !lista.contains(item)) return;
+  if (e.target.closest && e.target.closest('.orden-flecha')) return;
+  if (e.button !== 0) return;
+
+  const pedidoId = parseInt(item.dataset.id, 10);
+  if (!Number.isFinite(pedidoId)) return;
+
+  e.preventDefault();
+  ordenEntregaArrastre = {
+    itemEl: item,
+    lista,
+    pedidoId,
+    pointerId: e.pointerId,
+    startX: e.clientX,
+    startY: e.clientY
+  };
+  item.classList.add('dragging');
+  try {
+    item.setPointerCapture(e.pointerId);
+  } catch (_err) {}
+
+  item.addEventListener('pointermove', ordenItemPointerMove);
+  item.addEventListener('pointerup', ordenItemPointerEnd);
+  item.addEventListener('pointercancel', ordenItemPointerEnd);
+}
+
+function configurarArrastrePointerOrdenEntrega() {
+  const lista = document.getElementById('listaOrdenEntrega');
+  if (!lista || lista.dataset.pointerOrden === '1') return;
+  lista.dataset.pointerOrden = '1';
+  lista.addEventListener('pointerdown', ordenListaPointerDown);
+}
+
 // --- Drag and Drop ---
 let draggedElement = null;
-let draggedOrdenElement = null;
 
 function handleDragStart(e) {
+  if (this.classList && this.classList.contains('orden-item')) {
+    e.preventDefault();
+    return;
+  }
+  if (e.target && e.target.closest && e.target.closest('.orden-flecha')) {
+    e.preventDefault();
+    return;
+  }
   draggedElement = this;
   this.classList.add('dragging');
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/html', this.innerHTML);
+  try {
+    e.dataTransfer.setData('text/plain', String(this.dataset.id || ''));
+  } catch (_e) {}
 }
 
 function handleDragOver(e) {
@@ -2309,60 +2391,25 @@ function handleDragOver(e) {
 
 function handleDrop(e) {
   e.stopPropagation();
-  if (draggedElement !== this) {
-    const draggedId = parseInt(draggedElement.dataset.id, 10);
-    const targetId = parseInt(this.dataset.id, 10);
-    if (moverPedidoPorId(draggedId, targetId)) {
-      guardarPedidos();
-      renderPedidos();
-      actualizarMarcadores();
-    }
+  if (!draggedElement || draggedElement === this) return false;
+  const draggedId = parseInt(draggedElement.dataset.id, 10);
+  const targetId = parseInt(this.dataset.id, 10);
+  if (Number.isFinite(draggedId) && Number.isFinite(targetId) && moverPedidoPorId(draggedId, targetId)) {
+    guardarPedidos();
+    renderPedidos();
+    actualizarMarcadores();
   }
   return false;
 }
 
 function handleDragEnd() {
   this.classList.remove('dragging');
-}
-
-function handleOrdenDragStart(e) {
-  draggedOrdenElement = this;
-  this.classList.add('dragging');
-  e.dataTransfer.effectAllowed = 'move';
-  e.dataTransfer.setData('text/plain', this.dataset.id || '');
-}
-
-function handleOrdenDragOver(e) {
-  e.preventDefault();
-  e.dataTransfer.dropEffect = 'move';
-  return false;
-}
-
-function handleOrdenDrop(e) {
-  e.stopPropagation();
-  if (draggedOrdenElement !== this) {
-    const draggedId = parseInt(draggedOrdenElement.dataset.id, 10);
-    const targetId = parseInt(this.dataset.id, 10);
-    if (moverPedidoPorId(draggedId, targetId)) {
-      guardarPedidos();
-      renderPedidos();
-      actualizarMarcadores();
-    }
-  }
-  return false;
-}
-
-function handleOrdenDragEnd() {
-  this.classList.remove('dragging');
+  draggedElement = null;
 }
 
 // --- Gestión de pedidos ---
 
-async function eliminarPedido(index) {
-  if (!esAdmin()) {
-    alert('Solo el administrador puede eliminar pedidos.');
-    return;
-  }
+function eliminarPedido(index) {
   const pedido = pedidos[index];
   if (!pedido) return;
   if (!confirm(`¿Estás seguro de eliminar el pedido #${pedido.id}?`)) return;
@@ -2487,11 +2534,7 @@ function reactivarPedidoCancelado(index) {
   actualizarMarcadores();
 }
 
-async function eliminarTodos() {
-  if (!esAdmin()) {
-    alert('Solo el administrador puede eliminar todos los pedidos.');
-    return;
-  }
+function eliminarTodos() {
   if (!confirm("¿Estás seguro de eliminar TODOS los pedidos? Esta acción no se puede deshacer.")) return;
   const prevPedidos = Array.isArray(pedidos) ? [...pedidos] : [];
   const ids = prevPedidos.map((p) => p && p.id).filter((id) => id != null);
@@ -2535,7 +2578,6 @@ async function eliminarTodos() {
   }
 
   pedidos = [];
-  limpiarCachePedidosUsuario(sesionActiva?.user?.id);
   guardarCachePedidos();
   guardarPedidos();
   renderPedidos();
@@ -2744,7 +2786,7 @@ function cerrarModalMensajeSoporte() {
 
 function construirMensajeSoporte(pedido, tipoProblema) {
   const idPedido = pedido.id || 'N/A';
-  const productosRaw = pedido.productos && pedido.productos.length > 0
+  const productosRaw = Array.isArray(pedido.productos) && pedido.productos.length > 0
     ? pedido.productos.join(', ')
     : 'No especificado';
   const productos = productosRaw
@@ -2950,7 +2992,7 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
 
   const numeroAdmin = '573143473582';
   const montoRecibido = Number(pedido.montoNequi || 0) + Number(pedido.montoDaviplata || 0) + Number(pedido.montoEfectivo || 0);
-  const productosEntregados = pedido.productos && pedido.productos.length > 0
+  const productosEntregados = Array.isArray(pedido.productos) && pedido.productos.length > 0
     ? pedido.productos.join(', ')
     : 'No especificado';
 
@@ -3554,7 +3596,7 @@ function geocodificarDireccion(direccion, pedidoId, productos, callback) {
           <div style="padding:5px;min-width:200px;">
             <h3 style="margin:0 0 10px 0;color:#4CAF50;font-size:16px;">Pedido #${pedidoId}</h3>
             <p style="margin:5px 0;"><strong>Dirección:</strong> ${direccion}</p>
-            <p style="margin:5px 0;"><strong>Productos:</strong> ${productos && productos.length > 0 ? productos.join(', ') : 'No especificado'}</p>
+            <p style="margin:5px 0;"><strong>Productos:</strong> ${Array.isArray(productos) && productos.length > 0 ? productos.join(', ') : 'No especificado'}</p>
           </div>`);
         if (pedidoId !== 'TEMP') marcadores.push({ pedidoId, marker });
         if (callback) callback({ lat, lng });
@@ -3655,7 +3697,7 @@ function procesarURLMapaPedido(url, pedidoId, productos, callback) {
     marker.bindPopup(`
       <div style="padding:5px;min-width:200px;">
         <h3 style="margin:0 0 10px 0;color:#4CAF50;font-size:16px;">Pedido #${pedidoId}</h3>
-        <p style="margin:5px 0;"><strong>Productos:</strong> ${productos && productos.length > 0 ? productos.join(', ') : 'No especificado'}</p>
+        <p style="margin:5px 0;"><strong>Productos:</strong> ${Array.isArray(productos) && productos.length > 0 ? productos.join(', ') : 'No especificado'}</p>
       </div>`);
     marcadores.push({ pedidoId, marker });
     if (callback) callback({ lat, lng });
@@ -3675,6 +3717,7 @@ function normalizarPedidoEnMemoria(p) {
   }
   p.productos = normalizarProductosPedido(p.productos);
   if (!p.hasOwnProperty('createdBy')) p.createdBy = null;
+  if (!Array.isArray(p.productos)) p.productos = [];
   if (!p.hasOwnProperty('mapUrl')) p.mapUrl = '';
   if (!p.hasOwnProperty('coords') || !p.coords) p.coords = null;
   if (!p.hasOwnProperty('enCurso')) p.enCurso = false;
@@ -3702,10 +3745,29 @@ function normalizarPedidoEnMemoria(p) {
   return p;
 }
 
-async function bootSesionYDatos() {
-  if (bootSesionEjecutando) {
-    bootSesionCola = true;
-    return;
+
+
+const EXPORT_JSON_VERSION = 1;
+/** Tope orientativo para QR (byte mode); si supera, igual se muestra texto copiable. */
+const QR_PEDIDOS_MAX_CHARS = 2800;
+/** Legado: importación de copias antiguas (solo Base64 del gzip del JSON). */
+const QR_PAYLOAD_PREFIX_GZIP = 'G1';
+/**
+ * Respaldo copiable / QR: prefijo + Base64 URL del binario (gzip del JSON interno si reduce tamaño; si no, UTF-8).
+ * No es texto JSON legible ni “archivo”; es un solo código para pegar o escanear.
+ */
+const QR_BLOB_PREFIX = 'D1';
+
+function bytesEmpaquetadosSonGzip(bytes) {
+  return bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+}
+
+async function compactExportABytesBinario(obj) {
+  const raw = JSON.stringify(obj);
+  const enc = new TextEncoder();
+  const utf8 = enc.encode(raw);
+  if (typeof CompressionStream === 'undefined') {
+    return { bytes: utf8, comprimido: false, jsonChars: raw.length };
   }
   const uidEvitarDoble = sesionActiva?.user?.id;
   if (
@@ -3751,10 +3813,11 @@ async function bootSesionYDatos() {
       if (sesionActiva) mostrarAppPrincipal();
       pedidos = pedidos.map(normalizarPedidoEnMemoria);
       if (pedidos.length > 0) {
-        nextPedidoId = Math.max(...pedidos.map(p => p.id), 0) + 1;
+        nextPedidoId = Math.max(...pedidos.map((p) => p.id), 0) + 1;
       } else {
         nextPedidoId = 1;
       }
+      guardarPedidos();
       renderPedidos();
 
       if (pedidos.length > 0) {
@@ -3800,16 +3863,167 @@ async function bootSesionYDatos() {
       bootSesionCola = false;
       await bootSesionYDatos();
     }
+  };
+  reader.readAsText(file, 'utf-8');
+}
+
+function dispararSelectorImportarPedidos() {
+  cerrarMenuUsuario();
+  const input = document.getElementById('inputImportarPedidos');
+  if (input) input.click();
+}
+
+function copiarPayloadQrPedidos() {
+  const ta = document.getElementById('qrPedidosPayload');
+  if (!ta || !ta.value) return;
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  const texto = ta.value;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(texto).then(
+      () =>
+        alert(
+          'Copiado. En el otro equipo: guarda el texto en un archivo .txt o úsalo desde Importar, según tu flujo.'
+        ),
+      () => copiarPayloadQrPedidosFallback(texto)
+    );
+  } else {
+    copiarPayloadQrPedidosFallback(texto);
   }
 }
 
-async function iniciarAppSupabase() {
-  supabaseCliente = inicializarClienteSupabase();
-  exponerDebugAppDelivery();
-  if (!supabaseCliente) {
-    mostrarPantallaAuth();
+function copiarPayloadQrPedidosFallback(texto) {
+  try {
+    document.execCommand('copy');
+    alert('Copiado. Si no funcionó, selecciona el texto manualmente.');
+  } catch (_e) {
+    alert('Selecciona el texto del cuadro y cópialo con Ctrl+C.');
+  }
+}
+
+async function abrirModalQrPedidos() {
+  cerrarMenuUsuario();
+  let modal = document.getElementById('modalQrPedidos');
+  if (modal && !modal.querySelector('#qrPedidosPayload')) {
+    modal.remove();
+    modal = null;
+  }
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'modalQrPedidos';
+    modal.className = 'modal-no-entregado-backdrop';
+    modal.innerHTML =
+      '<div class="modal-no-entregado-card modal-qr-pedidos-card">' +
+      '<h3>Respaldo QR / copiar</h3>' +
+      '<p class="modal-qr-ayuda">Este código <strong>no es un archivo JSON</strong>: es un texto único (<code>D1</code> + Base64) con los datos compactados y, si aplica, comprimidos por dentro. Cópialo o escanéalo e <strong>impórtalo</strong> en esta misma app (o guárdalo como .txt). Para editar a mano usa <strong>Exportar JSON</strong> en el menú.</p>' +
+      '<div id="qrPedidosCanvasWrap" class="qr-pedidos-canvas-wrap"></div>' +
+      '<p id="qrPedidosAviso" class="qr-pedidos-aviso" style="display:none;"></p>' +
+      '<label for="qrPedidosPayload" class="qr-pedidos-label">Código de respaldo (D1… — no es JSON legible)</label>' +
+      '<textarea id="qrPedidosPayload" class="qr-pedidos-textarea" readonly rows="5" spellcheck="false"></textarea>' +
+      '<div class="qr-pedidos-acciones">' +
+      '<button type="button" class="btn-primary" onclick="copiarPayloadQrPedidos()"><i class="fa-regular fa-copy"></i> Copiar texto</button>' +
+      '<button type="button" class="modal-no-entregado-close" onclick="cerrarModalQrPedidos()">Cerrar</button>' +
+      '</div>' +
+      '</div>';
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) cerrarModalQrPedidos();
+    });
+  }
+  const aviso = modal.querySelector('#qrPedidosAviso');
+  const wrap = modal.querySelector('#qrPedidosCanvasWrap');
+  const textarea = modal.querySelector('#qrPedidosPayload');
+  if (!wrap || !textarea) return;
+  wrap.innerHTML = '';
+  if (aviso) {
+    aviso.style.display = 'none';
+    aviso.textContent = '';
+  }
+
+  let payloadStr;
+  let comprimido = false;
+  let sinComprimirChars = 0;
+  try {
+    const prep = await prepararCadenaParaQrPedidos();
+    payloadStr = prep.payloadStr;
+    comprimido = prep.comprimido;
+    sinComprimirChars = prep.sinComprimirChars;
+  } catch (e) {
+    console.error(e);
+    textarea.value = '';
+    wrap.innerHTML = '<p style="color:#b91c1c;">No se pudo preparar el respaldo.</p>';
+    modal.style.display = 'flex';
     return;
   }
+
+  textarea.value = payloadStr;
+
+  const partesAviso = [];
+  if (comprimido) partesAviso.push(`Compresión interna activa (equivalente ~${sinComprimirChars} caracteres sin binario).`);
+  if (payloadStr.length > QR_PEDIDOS_MAX_CHARS) {
+    partesAviso.push(
+      'Supera el tamaño cómodo de un solo QR. Usa «Copiar texto» o exporta JSON desde el menú.'
+    );
+  }
+  if (partesAviso.length && aviso) {
+    aviso.style.display = 'block';
+    aviso.textContent = partesAviso.join(' ');
+  }
+
+  if (typeof QRCode === 'undefined') {
+    wrap.innerHTML = '<p style="color:#b91c1c;">No se cargó la librería QR. Recarga la página. El texto de abajo sigue sirviendo para copiar.</p>';
+    modal.style.display = 'flex';
+    return;
+  }
+
+  if (payloadStr.length > QR_PEDIDOS_MAX_CHARS) {
+    wrap.innerHTML =
+      '<p style="color:#64748b;font-size:14px;">QR omitido por tamaño. Copia el texto y en el otro dispositivo guárdalo como <code>.txt</code> e impórtalo, o usa Exportar JSON.</p>';
+    modal.style.display = 'flex';
+    return;
+  }
+
+  const canvas = document.createElement('canvas');
+  wrap.appendChild(canvas);
+  QRCode.toCanvas(
+    canvas,
+    payloadStr,
+    { width: 280, margin: 2, errorCorrectionLevel: 'L' },
+    (err) => {
+      if (err) {
+        console.error(err);
+        wrap.innerHTML =
+          '<p style="color:#b91c1c;">No se pudo generar el QR. Usa el botón Copiar.</p>';
+      }
+    }
+  );
+  modal.style.display = 'flex';
+}
+
+function cerrarModalQrPedidos() {
+  const modal = document.getElementById('modalQrPedidos');
+  if (modal) modal.style.display = 'none';
+}
+
+function cargarPedidosDesdeLocalStorage() {
+  migrarCachePedidosDesdeClavesAntiguas();
+  const raw = cargarCachePedidos();
+  pedidos = deduplicarPedidosPorId((raw || []).map(normalizarPedidoEnMemoria));
+  if (pedidos.length > 0) {
+    nextPedidoId = Math.max(...pedidos.map((p) => p.id), 0) + 1;
+  } else {
+    nextPedidoId = 1;
+  }
+}
+
+function iniciarApp() {
+  exponerDebugAppDelivery();
+  cargarPedidosDesdeLocalStorage();
+  configurarArrastrePointerOrdenEntrega();
+
+  document.documentElement.classList.remove('auth-layout');
+  document.body.classList.remove('auth-layout');
 
   cargarConfigNotificacionEnUI();
   const modalConfig = document.getElementById('modalConfigNotificacion');
@@ -3880,10 +4094,14 @@ async function iniciarAppSupabase() {
       return;
     }
     try {
-      await bootSesionYDatos();
+      if (!mapa) initMap();
+      else {
+        mapaAjustado = false;
+        actualizarMarcadores();
+        ajustarMapaConReintentos();
+      }
     } catch (e) {
       console.error(e);
-      if (sesionActiva) mostrarAppPrincipal();
     }
   });
 
@@ -3927,12 +4145,4 @@ async function iniciarAppSupabase() {
   }
 }
 
-window.onload = function () {
-  void iniciarAppSupabase();
-};
-
-// Flush de pedidos al salir/recargar pestaña.
-window.addEventListener('pagehide', () => {
-  enSalidaDePagina = true;
-  try { void persistPedidosToSupabase({ silent: true, keepalive: true }); } catch (_e) {}
-});
+document.addEventListener('DOMContentLoaded', iniciarApp);
