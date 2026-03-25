@@ -466,15 +466,30 @@ function rowToPedidoSeguro(r) {
   }
 }
 
+function normalizarProductosPedido(raw) {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) {
+    return raw.map((x) => (x == null ? '' : String(x))).filter((s) => s !== '');
+  }
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return [];
+    try {
+      const parsed = JSON.parse(s);
+      return normalizarProductosPedido(parsed);
+    } catch (_e) {
+      return [s];
+    }
+  }
+  if (typeof raw === 'object') return [];
+  return [String(raw)];
+}
+
 function rowToPedido(r) {
   const coords = (r.coords_lat != null && r.coords_lng != null && Number.isFinite(Number(r.coords_lat)) && Number.isFinite(Number(r.coords_lng)))
     ? { lat: Number(r.coords_lat), lng: Number(r.coords_lng) }
     : null;
-  let productos = [];
-  if (Array.isArray(r.productos)) productos = r.productos;
-  else if (typeof r.productos === 'string') {
-    try { productos = JSON.parse(r.productos); } catch (e) { productos = []; }
-  }
+  const productos = normalizarProductosPedido(r.productos);
   return {
     id: Number(r.id),
     assignedTo: r.assigned_to != null && String(r.assigned_to).trim() !== ''
@@ -487,6 +502,7 @@ function rowToPedido(r) {
     valor: String(r.valor != null ? r.valor : '0'),
     textoOriginal: r.texto_original || '',
     mapUrl: r.map_url || '',
+    productos,
     coords,
     enCurso: !!r.en_curso,
     posicionPendiente: Number.isInteger(Number(r.posicion_pendiente)) ? Number(r.posicion_pendiente) : null,
@@ -1330,12 +1346,18 @@ function mostrarAppPrincipal() {
       try {
         renderPedidos();
         actualizarMarcadores();
-      } catch (_e) {}
+      } catch (e) {
+        console.error('[app-delivery] renderPedidos tras cargar usuarios', e);
+      }
     });
   }
   // Importante: si los pedidos vienen del cache local o llegan antes del boot,
   // renderizar siempre las tarjetas al entrar/recargar.
-  try { renderPedidos(); } catch (_e) {}
+  try {
+    renderPedidos();
+  } catch (e) {
+    console.error('[app-delivery] renderPedidos en mostrarAppPrincipal', e);
+  }
   // Refuerzo: en recargas, si profiles tarda/falla pero is_admin() ya dice true, reactivar UI admin.
   void asegurarUIAdminDesdeRpc();
   // Segundo refuerzo: cuando el arranque dispara varias consultas en paralelo,
@@ -1929,6 +1951,19 @@ function renderPedidos() {
   // Si en memoria quedaron duplicados (por cache o recargas), normalizar antes de pintar.
   pedidos = deduplicarPedidosPorId(pedidos);
   const lista = document.getElementById("listaPedidos");
+  if (!lista) {
+    console.error('[app-delivery] No existe #listaPedidos en el DOM');
+    return;
+  }
+  try {
+    renderPedidosContenido(lista);
+  } catch (e) {
+    console.error('[app-delivery] Error al pintar pedidos:', e);
+    lista.innerHTML = `<div class="empty-state" style="padding:16px;"><p>No se pudo mostrar la lista de pedidos.</p><p style="font-size:14px;">${escapeHtmlAttr(String(e && e.message ? e.message : e))}. Revisa la consola (F12).</p></div>`;
+  }
+}
+
+function renderPedidosContenido(lista) {
   const pendientes = [];
   const enCurso = [];
   const entregados = [];
@@ -2023,6 +2058,7 @@ function renderPedidos() {
   ajustarMapaConReintentos();
 }
 
+
 function cambiarVistaPedidos(vista) {
   if (!['pendientes', 'enCurso', 'entregados', 'cancelados'].includes(vista)) return;
   let n = 0;
@@ -2069,7 +2105,18 @@ function crearSeccionPedidos(claseExtra, items, textoVacio) {
   if (items.length === 0) {
     contenido.innerHTML = `<div class="empty-state" style="padding:20px;"><p style="font-size:15px;">${textoVacio}</p></div>`;
   } else {
-    items.forEach(({ pedido, index }) => contenido.appendChild(crearTarjetaPedido(pedido, index)));
+    items.forEach(({ pedido, index }) => {
+      try {
+        contenido.appendChild(crearTarjetaPedido(pedido, index));
+      } catch (err) {
+        console.error('[app-delivery] crearTarjetaPedido', pedido && pedido.id, err);
+        const aviso = document.createElement('div');
+        aviso.className = 'empty-state';
+        aviso.style.padding = '16px';
+        aviso.textContent = `No se pudo mostrar el pedido #${pedido && pedido.id != null ? pedido.id : '?'}. Revisa la consola (F12).`;
+        contenido.appendChild(aviso);
+      }
+    });
   }
 
   seccion.appendChild(contenido);
@@ -2155,7 +2202,7 @@ function crearTarjetaPedido(pedido, index) {
       <button class="btn-copy-inline" onclick="copiarDireccionPedido(${index})" title="Copiar dirección">
         <i class="fa-regular fa-copy"></i> Copiar
       </button><br>
-      <strong>Productos:</strong> ${pedido.productos && pedido.productos.length > 0 ? pedido.productos.join(', ') : 'No especificado'}<br>
+      <strong>Productos:</strong> ${Array.isArray(pedido.productos) && pedido.productos.length > 0 ? pedido.productos.map((x) => escapeHtmlAttr(String(x))).join(', ') : 'No especificado'}<br>
       <strong>Valor:</strong> $${valorFormato}<br>
     </div>
     ${asignarHtml}
@@ -3619,6 +3666,7 @@ function normalizarPedidoEnMemoria(p) {
   } else {
     p.assignedTo = normalizarUuidAsignacion(p.assignedTo);
   }
+  p.productos = normalizarProductosPedido(p.productos);
   if (!p.hasOwnProperty('createdBy')) p.createdBy = null;
   if (!p.hasOwnProperty('mapUrl')) p.mapUrl = '';
   if (!p.hasOwnProperty('coords') || !p.coords) p.coords = null;
