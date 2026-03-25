@@ -1092,6 +1092,7 @@ async function aplicarCambioRolDesdeFila(userId) {
 
 async function asignarPedidoRepartidor(pedidoId, repartidorIdRaw) {
   if (!esAdmin() || !supabaseCliente) return;
+  cancelarPersistPedidosPendiente();
   const repartidorId = normalizarUuidAsignacion(repartidorIdRaw);
   const { data, error } = await supabaseCliente
     .from('pedidos')
@@ -1108,6 +1109,7 @@ async function asignarPedidoRepartidor(pedidoId, repartidorIdRaw) {
   }
   const p = pedidos.find(x => x.id === pedidoId);
   if (p) p.assignedTo = repartidorId;
+  guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
 }
@@ -1122,6 +1124,11 @@ async function asignarSeccionPedidos(claseExtra) {
   const sel = document.getElementById(`asignar-seccion-${claseExtra}`);
   if (!sel) return;
   const repartidorId = normalizarUuidAsignacion(sel.value);
+  if (!repartidorId) {
+    alert('Elige un repartidor en el desplegable antes de usar «Asignar todos».');
+    return;
+  }
+  cancelarPersistPedidosPendiente();
   const ids = pedidos
     .filter((p) => {
       if (p.cancelado || p.entregado) return false;
@@ -1130,7 +1137,10 @@ async function asignarSeccionPedidos(claseExtra) {
       return false;
     })
     .map((p) => p.id);
-  if (ids.length === 0) return;
+  if (ids.length === 0) {
+    alert('No hay pedidos en esta sección para asignar (revisa la pestaña Pendientes / En ruta).');
+    return;
+  }
   const CHUNK = 80;
   let totalActualizados = 0;
   for (let i = 0; i < ids.length; i += CHUNK) {
@@ -1148,13 +1158,20 @@ async function asignarSeccionPedidos(claseExtra) {
   }
   if (totalActualizados !== ids.length) {
     alert(
-      `Solo se actualizaron ${totalActualizados} de ${ids.length} pedidos. ` +
-        'El repartidor no verá los que falten hasta que corrijas permisos (RLS) o el rol admin en Supabase. Recarga la página como admin.'
+      totalActualizados === 0
+        ? 'No se pudo asignar ningún pedido en el servidor (revisa rol administrador en Supabase o permisos RLS sobre pedidos).'
+        : `Solo se actualizaron ${totalActualizados} de ${ids.length} pedidos. ` +
+            'El repartidor no verá los que falten hasta corregir permisos.'
     );
+    await cargarPedidosDesdeSupabase();
+    renderPedidos();
+    actualizarMarcadores();
+    return;
   }
   pedidos.forEach((p) => {
     if (ids.includes(p.id)) p.assignedTo = repartidorId;
   });
+  guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
 }
@@ -1844,13 +1861,20 @@ async function procesarMultiplesPedidos(texto) {
   alert(msg);
 }
 
+function cancelarPersistPedidosPendiente() {
+  if (persistTimeoutId) {
+    clearTimeout(persistTimeoutId);
+    persistTimeoutId = null;
+  }
+}
+
 function guardarPedidos() {
   if (!supabaseCliente || !sesionActiva) return;
   // Evita duplicados por carreras de cache/red.
   pedidos = deduplicarPedidosPorId(pedidos);
   // Persistencia inmediata local para que no desaparezca al recargar.
   guardarCachePedidos();
-  if (persistTimeoutId) clearTimeout(persistTimeoutId);
+  cancelarPersistPedidosPendiente();
   persistTimeoutId = setTimeout(() => {
     persistTimeoutId = null;
     void persistPedidosToSupabase();
