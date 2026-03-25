@@ -868,8 +868,12 @@ async function asegurarUIAdminDesdeRpc() {
   if (panelAdmin) panelAdmin.style.display = 'block';
   const btnElim = document.getElementById('btnEliminarTodos');
   if (btnElim) btnElim.style.display = 'inline-flex';
-  // Cargar/recargar usuarios admin (por recargas puede quedar vacío).
-  void cargarUsuariosParaAdmin();
+  void cargarUsuariosParaAdmin().then(() => {
+    try {
+      renderPedidos();
+      actualizarMarcadores();
+    } catch (_e) {}
+  });
 }
 
 async function refrescarPerfilUsuario() {
@@ -1000,6 +1004,10 @@ async function cargarUsuariosParaAdmin() {
           }));
           renderPanelAdminUsuarios();
           guardarCacheUsuariosAdmin();
+          try {
+            renderPedidos();
+            actualizarMarcadores();
+          } catch (_e) {}
           return;
         } catch (e) {
           console.error(e);
@@ -1017,6 +1025,10 @@ async function cargarUsuariosParaAdmin() {
         }));
         renderPanelAdminUsuarios();
         guardarCacheUsuariosAdmin();
+        try {
+          renderPedidos();
+          actualizarMarcadores();
+        } catch (_e) {}
         return;
       }
       console.error(error);
@@ -1179,7 +1191,17 @@ function mostrarTabAuth(tab) {
 function opcionesSelectRepartidores(pedido) {
   const opts = ['<option value="">Sin asignar</option>'];
   const normalizarRol = (r) => String(r || '').toLowerCase().trim();
-  usuariosRegistrados.filter(u => normalizarRol(u.role) === 'repartidor').forEach((u) => {
+  const uidSesion = normalizarUuidAsignacion(sesionActiva?.user?.id);
+  const repartidores = usuariosRegistrados.filter((u) => {
+    if (normalizarUuidAsignacion(u.id) === uidSesion) return false;
+    return normalizarRol(u.role) === 'repartidor';
+  });
+  if (repartidores.length === 0 && usuariosRegistrados.some((u) => normalizarUuidAsignacion(u.id) !== uidSesion)) {
+    opts.push(
+      '<option value="" disabled>Nadie con rol Repartidor (cámbialo abajo en «Usuarios registrados»)</option>'
+    );
+  }
+  repartidores.forEach((u) => {
     const uid = normalizarUuidAsignacion(u.id);
     const sel = uid && pedido.assignedTo && pedido.assignedTo === uid ? ' selected' : '';
     const login = usuarioLoginVisible(u.email);
@@ -1266,8 +1288,12 @@ function mostrarAppPrincipal() {
   const btnMediosPagoMenu = document.getElementById('btnMediosPagoMenu');
   if (btnMediosPagoMenu) btnMediosPagoMenu.style.display = adminUi ? 'none' : 'flex';
   if (adminUi) {
-    // En recargas, el perfil puede estar listo pero la lista de usuarios no se disparó.
-    void cargarUsuariosParaAdmin();
+    void cargarUsuariosParaAdmin().then(() => {
+      try {
+        renderPedidos();
+        actualizarMarcadores();
+      } catch (_e) {}
+    });
   }
   // Importante: si los pedidos vienen del cache local o llegan antes del boot,
   // renderizar siempre las tarjetas al entrar/recargar.
@@ -3550,9 +3576,6 @@ async function bootSesionYDatos() {
   }
   bootSesionEjecutando = true;
   try {
-    if (sesionActiva) {
-      mostrarAppPrincipal();
-    }
     try {
       if (sesionActiva?.user?.id) {
         try { localStorage.removeItem(CACHE_PEDIDOS_LEGACY_KEY); } catch (_e) {}
@@ -3563,9 +3586,8 @@ async function bootSesionYDatos() {
         }
       }
       await Promise.all([refrescarPerfilUsuario(), cargarPedidosDesdeSupabase()]);
+      if (esAdminVisual()) await cargarUsuariosParaAdmin();
       if (sesionActiva) mostrarAppPrincipal();
-
-      if (esAdminVisual()) void cargarUsuariosParaAdmin();
       pedidos = pedidos.map(normalizarPedidoEnMemoria);
       if (pedidos.length > 0) {
         nextPedidoId = Math.max(...pedidos.map(p => p.id), 0) + 1;
