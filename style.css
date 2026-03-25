@@ -598,20 +598,67 @@ button i,
 }
 
 .orden-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   background: white;
   border: 1px solid #ddd;
   border-left: 4px solid var(--triad-a);
   border-radius: 8px;
-  padding: 10px;
+  padding: 8px 10px;
   font-weight: 700;
   color: var(--triad-a-dark);
   cursor: grab;
   user-select: none;
+  touch-action: none;
+  -webkit-user-select: none;
+}
+
+.orden-item-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orden-item-acciones {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+  align-items: center;
+}
+
+.orden-flecha {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  color: #333;
+}
+
+.orden-flecha:hover {
+  background: #f0f0f0;
+  border-color: #bbb;
 }
 
 .orden-item.dragging {
   opacity: 0.55;
   cursor: grabbing;
+  z-index: 2;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.orden-item.orden-drop-hint {
+  outline: 2px dashed var(--triad-a);
+  outline-offset: 2px;
 }
 
 .orden-vacio {
@@ -887,6 +934,70 @@ button i,
 
 .modal-no-entregado-close:hover {
   background: #d8e0e8;
+}
+
+.modal-qr-pedidos-card {
+  width: min(480px, 100%);
+  text-align: left;
+}
+
+.modal-qr-pedidos-card h3 {
+  text-align: center;
+}
+
+.modal-qr-ayuda {
+  font-size: 14px;
+  color: #4b5563;
+  margin: 0 0 12px;
+  line-height: 1.45;
+}
+
+.qr-pedidos-canvas-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 120px;
+  margin: 12px 0;
+}
+
+.qr-pedidos-aviso {
+  color: #b45309;
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+
+.qr-pedidos-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 6px;
+}
+
+.qr-pedidos-textarea {
+  width: 100%;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  resize: vertical;
+  min-height: 100px;
+  max-height: 240px;
+  word-break: break-all;
+  background: #f8fafc;
+}
+
+.qr-pedidos-acciones {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.qr-pedidos-acciones .btn-primary {
+  margin: 0;
 }
 
 @media (max-width: 768px) {

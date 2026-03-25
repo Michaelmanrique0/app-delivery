@@ -6,57 +6,25 @@
 <title>Gestión de Pedidos - Delivery App</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
-<link rel="stylesheet" href="style.css?v=20260325b">
+<link rel="stylesheet" href="style.css?v=20260325g">
 </head>
 
 <body>
-<div id="authScreen" class="auth-screen">
-  <p id="authBootMessage" class="auth-boot-message">Comprobando sesión…</p>
-  <div class="auth-card" id="authCard" style="display:none;">
-    <h1 class="auth-title">Delivery App</h1>
-    <p class="auth-subtitle">Entra o crea una cuenta</p>
-    <div class="auth-tabs">
-      <button type="button" class="auth-tab active" id="authTabLogin" onclick="mostrarTabAuth('login')">Entrar</button>
-      <button type="button" class="auth-tab" id="authTabRegistro" onclick="mostrarTabAuth('registro')">Registro</button>
-    </div>
-    <div id="authFormLogin" class="auth-form">
-      <label for="loginUsuario">Correo o usuario</label>
-      <input type="text" id="loginUsuario" autocomplete="username" placeholder="Correo o usuario de acceso">
-      <label for="loginPassword">Contraseña</label>
-      <input type="password" id="loginPassword" autocomplete="current-password" placeholder="Contraseña">
-      <p id="authErrorLogin" class="auth-error" style="display:none;"></p>
-      <button type="button" id="btnLoginEntrar" class="btn-primary auth-submit" onclick="iniciarSesion()">Entrar</button>
-    </div>
-    <div id="authFormRegistro" class="auth-form" style="display:none;">
-      <label for="regNombre">Nombre completo</label>
-      <input type="text" id="regNombre" autocomplete="name" placeholder="Tu nombre">
-      <label for="regEmail">Correo electrónico</label>
-      <input type="email" id="regEmail" autocomplete="email" placeholder="tu@correo.com">
-      <label for="regUsuario">Usuario</label>
-      <input type="text" id="regUsuario" autocomplete="username" placeholder="Elige un usuario (sin espacios)">
-      <label for="regPassword">Contraseña</label>
-      <input type="password" id="regPassword" autocomplete="new-password" placeholder="Mínimo 6 caracteres">
-      <p id="authErrorRegistro" class="auth-error" style="display:none;"></p>
-      <button type="button" class="btn-primary auth-submit" onclick="registrarUsuario()">Crear cuenta</button>
-    </div>
-  </div>
-</div>
+<input type="file" id="inputImportarPedidos" accept="application/json,.json,text/plain,.txt" style="display:none;" onchange="importarPedidosDesdeArchivo(event)">
 
-<div id="mainApp" class="container" style="display:none;" data-app-main>
+<div id="mainApp" class="container" data-app-main>
   <header class="app-header">
     <div class="app-header-inner">
       <h1 class="app-header-title">Gestión de Pedidos Delivery</h1>
       <div class="app-header-menu-wrap">
-        <button type="button" id="btnMenuUsuario" class="btn-menu-hamburger" aria-expanded="false" aria-controls="menuUsuarioPanel" aria-label="Menú de cuenta" onclick="toggleMenuUsuario(event)">
+        <button type="button" id="btnMenuUsuario" class="btn-menu-hamburger" aria-expanded="false" aria-controls="menuUsuarioPanel" aria-label="Menú" onclick="toggleMenuUsuario(event)">
           <i class="fa-solid fa-bars" aria-hidden="true"></i>
         </button>
         <div id="menuUsuarioPanel" class="menu-usuario-panel" style="display:none;" role="menu">
-          <div class="menu-usuario-identidad">
-            <span id="headerUserNombre" class="header-user-nombre"></span>
-            <span id="headerUserRol" class="header-user-rol"></span>
-          </div>
+          <button type="button" class="menu-usuario-accion" role="menuitem" onclick="exportarPedidosJson()"><i class="fa-solid fa-file-export"></i> Exportar JSON</button>
+          <button type="button" class="menu-usuario-accion" role="menuitem" onclick="dispararSelectorImportarPedidos()"><i class="fa-solid fa-file-import"></i> Importar JSON</button>
+          <button type="button" class="menu-usuario-accion" role="menuitem" onclick="abrirModalQrPedidos()"><i class="fa-solid fa-qrcode"></i> QR / copiar respaldo</button>
           <button type="button" id="btnMediosPagoMenu" class="menu-usuario-accion" role="menuitem" onclick="abrirConfigNotificacionDesdeMenu()"><i class="fa-solid fa-sliders"></i> Medios de pago (notificación al cliente)</button>
-          <button type="button" class="menu-usuario-salir" role="menuitem" onclick="cerrarSesion()"><i class="fa-solid fa-right-from-bracket"></i> Salir</button>
         </div>
       </div>
     </div>
@@ -105,16 +73,10 @@
     <button type="button" id="btnProcesarPedido" class="btn-primary" onclick="procesarPedido()">Procesar pedido(s)</button>
   </div>
 
-  <div id="panelAdmin" class="section admin-panel" style="display:none;">
-    <h2>Usuarios registrados</h2>
-    <p class="admin-usuarios-ayuda">El primer usuario en la base de datos es administrador. Aquí puedes asignar rol de repartidor o admin.</p>
-    <div id="listaUsuariosAdmin" class="admin-usuarios-lista"></div>
-  </div>
-
   <div class="section">
     <div class="actions-bar">
       <h2 style="margin: 0; border: none; padding: 0;">Lista de Pedidos</h2>
-      <button id="btnEliminarTodos" class="btn-danger" onclick="eliminarTodos()" style="display:none;"><i class="fa-solid fa-trash"></i> Eliminar Todos</button>
+      <button id="btnEliminarTodos" class="btn-danger" onclick="eliminarTodos()"><i class="fa-solid fa-trash"></i> Eliminar Todos</button>
     </div>
     <div class="totales-resumen" id="totalesResumen" style="display: none;">
       <div class="total-item total-recogido-dia">
@@ -147,7 +109,7 @@
     <div id="listaPedidos">
       <div class="empty-state" id="emptyState">
         <p>No hay pedidos aún</p>
-        <p style="font-size: 14px;">Los pedidos aparecerán aquí cuando el administrador los cree y te asigne.</p>
+        <p style="font-size: 14px;">Pega un pedido arriba o importa un respaldo desde el menú.</p>
       </div>
     </div>
   </div>
@@ -158,16 +120,15 @@
       <div id="mapa" class="mapa-container"></div>
       <div class="orden-entrega-panel">
         <h3>Orden de entrega</h3>
-        <p class="orden-ayuda">Arrastra para cambiar la secuencia (solo número de pedido)</p>
+        <p class="orden-ayuda">Pulsa y arrastra una fila (ratón o dedo) y suéltala donde quieras en esta lista. Las flechas ▲ ▼ siguen disponibles. El orden se guarda en este dispositivo.</p>
         <div id="listaOrdenEntrega"></div>
       </div>
     </div>
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.1/dist/umd/supabase.min.js"></script>
-<script src="supabase-config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=20260325am"></script>
+<script src="app.js?v=20260325qr2"></script>
 </body>
 </html>
