@@ -2087,8 +2087,8 @@ function crearTarjetaPedido(pedido, index) {
   div.dataset.index = index;
   div.dataset.id = pedido.id;
 
-  const telefonoLimpio = pedido.telefono ? pedido.telefono.replace(/\D/g, '') : '';
-  const valorFormato = parseInt(pedido.valor || 0, 10).toLocaleString('es-CO');
+  const telefonoLimpio = String(pedido.telefono || '').replace(/\D/g, '');
+  const valorFormato = parseInt(String(pedido.valor || '0'), 10).toLocaleString('es-CO');
   const btnNoEntregadoHtml = pedido.entregado
     ? `<div class="pedido-no-entregado-wrap"><button class="btn-warning" onclick="marcarNoEntregado(${index})" style="width: 100%;"><i class="fa-solid fa-rotate-left"></i> No entregado</button></div>`
     : '';
