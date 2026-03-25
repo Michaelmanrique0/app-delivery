@@ -457,6 +457,15 @@ function pedidoNuevoBase() {
   };
 }
 
+function rowToPedidoSeguro(r) {
+  try {
+    return rowToPedido(r);
+  } catch (e) {
+    console.warn('[app-delivery] Fila pedido omitida (payload inválido):', e);
+    return null;
+  }
+}
+
 function rowToPedido(r) {
   const coords = (r.coords_lat != null && r.coords_lng != null && Number.isFinite(Number(r.coords_lat)) && Number.isFinite(Number(r.coords_lng)))
     ? { lat: Number(r.coords_lat), lng: Number(r.coords_lng) }
@@ -612,7 +621,11 @@ async function cargarPedidosDesdeSupabase() {
             pedidos = deduplicarPedidosPorId(cargarCachePedidos());
           }
         } else {
-          pedidos = deduplicarPedidosPorId(rows.map(rowToPedido));
+          const mapped = rows.map(rowToPedidoSeguro).filter((p) => p != null);
+          if (rows.length > 0 && mapped.length === 0) {
+            console.error('[app-delivery] pedidos: el servidor devolvió filas pero ninguna se pudo leer (revisa datos en public.pedidos).');
+          }
+          pedidos = deduplicarPedidosPorId(mapped);
           guardarCachePedidos();
         }
         if (pedidos.length > 0) nextPedidoId = Math.max(...pedidos.map((p) => p.id), 0) + 1;
@@ -632,7 +645,11 @@ async function cargarPedidosDesdeSupabase() {
           pedidos = deduplicarPedidosPorId(cargarCachePedidos());
         }
       } else {
-        pedidos = deduplicarPedidosPorId(rows.map(rowToPedido));
+        const mapped = rows.map(rowToPedidoSeguro).filter((p) => p != null);
+        if (rows.length > 0 && mapped.length === 0) {
+          console.error('[app-delivery] pedidos: el servidor devolvió filas pero ninguna se pudo leer (revisa datos en public.pedidos).');
+        }
+        pedidos = deduplicarPedidosPorId(mapped);
         guardarCachePedidos();
       }
       if (pedidos.length > 0) {
@@ -2295,19 +2312,35 @@ async function eliminarPedido(index) {
   const pedido = pedidos[index];
   if (!pedido) return;
   if (!confirm(`¿Estás seguro de eliminar el pedido #${pedido.id}?`)) return;
-  const id = pedido.id;
-  pedidos.splice(index, 1);
-  renderPedidos();
-  actualizarMarcadores();
+  const id = pedido.id == null ? null : Number(pedido.id);
+  if (id == null || !Number.isFinite(id)) {
+    alert('Id de pedido no válido.');
+    return;
+  }
+  cancelarPersistPedidosPendiente();
   if (supabaseCliente) {
-    const { error } = await supabaseCliente.from('pedidos').delete().eq('id', id);
+    const { data, error } = await supabaseCliente.from('pedidos').delete().eq('id', id).select('id');
     if (error) {
       alert('Error al eliminar en el servidor: ' + error.message);
       await cargarPedidosDesdeSupabase();
       renderPedidos();
       actualizarMarcadores();
+      return;
+    }
+    if (!data || data.length === 0) {
+      alert(
+        'El pedido no se eliminó en Supabase (0 filas). Suele deberse a políticas RLS o a que tu usuario no sea admin en la tabla profiles. Revisa el rol en Supabase.'
+      );
+      await cargarPedidosDesdeSupabase();
+      renderPedidos();
+      actualizarMarcadores();
+      return;
     }
   }
+  pedidos.splice(index, 1);
+  guardarPedidos();
+  renderPedidos();
+  actualizarMarcadores();
 }
 
 function marcarEntregado(index) {
@@ -2419,21 +2452,38 @@ async function eliminarTodos() {
     return;
   }
 
-  const { error } = await supabaseCliente.from('pedidos').delete().in('id', ids);
-  if (error) {
-    alert('Error al eliminar en el servidor: ' + error.message);
-    // Revertir UI/local en caso de fallo.
-    pedidos = prevPedidos;
-    guardarCachePedidos();
+  cancelarPersistPedidosPendiente();
+  const idsNum = ids.map((x) => Number(x)).filter((n) => Number.isFinite(n));
+  const CHUNK_DEL = 80;
+  let totalBorrados = 0;
+  for (let i = 0; i < idsNum.length; i += CHUNK_DEL) {
+    const chunk = idsNum.slice(i, i + CHUNK_DEL);
+    const { data, error } = await supabaseCliente.from('pedidos').delete().in('id', chunk).select('id');
+    if (error) {
+      alert('Error al eliminar en el servidor: ' + error.message);
+      pedidos = prevPedidos;
+      guardarCachePedidos();
+      renderPedidos();
+      actualizarMarcadores();
+      return;
+    }
+    totalBorrados += data && data.length ? data.length : 0;
+  }
+  if (totalBorrados !== idsNum.length) {
+    alert(
+      `Solo se eliminaron ${totalBorrados} de ${idsNum.length} pedidos en Supabase. ` +
+        'Revisa que tu usuario sea administrador (profiles.role) y la política pedidos_delete.'
+    );
+    await cargarPedidosDesdeSupabase();
     renderPedidos();
     actualizarMarcadores();
     return;
   }
 
-  // Borrado exitoso: limpiar estado y cache local para que no reaparezcan al recargar.
   pedidos = [];
   limpiarCachePedidosUsuario(sesionActiva?.user?.id);
   guardarCachePedidos();
+  guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
 }
