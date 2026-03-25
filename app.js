@@ -1,4 +1,104 @@
 let pedidos = [];
+let supabaseCliente = null;
+let sesionActiva = null;
+let perfilUsuario = null;
+let usuariosRegistrados = [];
+let persistTimeoutId = null;
+let canalRealtimePedidos = null;
+let recargaPedidosRealtimeTimer = null;
+let bootSesionEjecutando = false;
+let bootSesionCola = false;
+/** Evita doble boot si SIGNED_IN llega mientras iniciarSesion ya llama a bootSesionYDatos. */
+let enFlujoLoginManual = false;
+let refrescoPerfilEnCurso = false;
+let cargaUsuariosAdminEnCurso = false;
+let enSalidaDePagina = false;
+/** Evita segundo boot completo cuando INITIAL_SESSION y getSession() disparan arranque en la misma recarga. */
+let ultimoBootExitosoPorUsuario = { userId: null, ts: 0 };
+
+function reiniciarMarcaUltimoBoot() {
+  ultimoBootExitosoPorUsuario = { userId: null, ts: 0 };
+}
+
+// Exponer estado mínimo para depuración desde consola (no incluye keys).
+function exponerDebugAppDelivery() {
+  try {
+    window.__appDelivery = {
+      get supabaseReady() { return !!supabaseCliente; },
+      get session() { return sesionActiva || null; },
+      get userId() { return sesionActiva?.user?.id; },
+      get profile() { return perfilUsuario || null; },
+      get esAdmin() { return esAdmin(); },
+      get esAdminVisual() { return esAdminVisual(); },
+      recargarPerfil: () => refrescarPerfilUsuario(),
+      recargarUsuariosAdmin: () => cargarUsuariosParaAdmin(),
+      recargarPedidos: () => cargarPedidosDesdeSupabase().then(() => renderPedidos()),
+    };
+  } catch (_e) {}
+}
+
+// Recuerda la última pantalla *por pestaña* (sessionStorage).
+// Requisito: si recargas estando en login, NO debe auto-entrar; si recargas dentro, debe seguir dentro.
+const SS_LAST_SCREEN_KEY = 'app_delivery_last_screen';
+const SS_ADMIN_USER_ID_KEY = 'app_delivery_admin_user_id';
+
+function ssGet(key) {
+  try { return window.sessionStorage ? window.sessionStorage.getItem(key) : null; } catch (_e) { return null; }
+}
+
+function ssSet(key, value) {
+  try { if (window.sessionStorage) window.sessionStorage.setItem(key, String(value)); } catch (_e) {}
+}
+
+function wasLoginScreenBeforeReload() {
+  // Por defecto (pestaña nueva) queremos quedarnos en login.
+  // Solo auto-entramos si esta pestaña estaba en "main" antes de recargar.
+  return ssGet(SS_LAST_SCREEN_KEY) !== 'main';
+}
+
+function marcarPantallaLogin() {
+  ssSet(SS_LAST_SCREEN_KEY, 'login');
+}
+
+function marcarPantallaMain() {
+  ssSet(SS_LAST_SCREEN_KEY, 'main');
+}
+
+function marcarHintAdminSesion(userId) {
+  if (!userId) return;
+  ssSet(SS_ADMIN_USER_ID_KEY, userId);
+}
+
+function limpiarHintAdminSesion() {
+  try { if (window.sessionStorage) window.sessionStorage.removeItem(SS_ADMIN_USER_ID_KEY); } catch (_e) {}
+}
+
+function aplicarHintAdminSesion() {
+  const uid = sesionActiva?.user?.id;
+  if (!uid) return false;
+  const hintUid = ssGet(SS_ADMIN_USER_ID_KEY);
+  if (hintUid !== uid) return false;
+  if (esAdmin()) return true;
+  const u = sesionActiva.user;
+  perfilUsuario = {
+    id: u.id,
+    email: u.email || '',
+    full_name: (u.user_metadata && u.user_metadata.full_name) || '',
+    role: 'admin',
+    created_at: null
+  };
+  return true;
+}
+
+function hayHintAdminSesionActual() {
+  const uid = sesionActiva?.user?.id;
+  if (!uid) return false;
+  return ssGet(SS_ADMIN_USER_ID_KEY) === uid;
+}
+
+function esAdminVisual() {
+  return esAdmin() || hayHintAdminSesionActual();
+}
 let mapa = null;
 let marcadores = [];
 let rutaLayer = null;
@@ -305,6 +405,1093 @@ function pedidoNuevoBase() {
     montoDaviplata: 0,
     montoEfectivo: 0
   };
+}
+
+function rowToPedidoSeguro(r) {
+  try {
+    return rowToPedido(r);
+  } catch (e) {
+    console.warn('[app-delivery] Fila pedido omitida (payload inválido):', e);
+    return null;
+  }
+}
+
+function normalizarProductosPedido(raw) {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) {
+    return raw.map((x) => (x == null ? '' : String(x))).filter((s) => s !== '');
+  }
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return [];
+    try {
+      const parsed = JSON.parse(s);
+      return normalizarProductosPedido(parsed);
+    } catch (_e) {
+      return [s];
+    }
+  }
+  if (typeof raw === 'object') return [];
+  return [String(raw)];
+}
+
+function rowToPedido(r) {
+  const coords = (r.coords_lat != null && r.coords_lng != null && Number.isFinite(Number(r.coords_lat)) && Number.isFinite(Number(r.coords_lng)))
+    ? { lat: Number(r.coords_lat), lng: Number(r.coords_lng) }
+    : null;
+  const productos = normalizarProductosPedido(r.productos);
+  return {
+    id: Number(r.id),
+    assignedTo: r.assigned_to != null && String(r.assigned_to).trim() !== ''
+      ? normalizarUuidAsignacion(r.assigned_to)
+      : null,
+    createdBy: r.created_by || null,
+    nombre: r.nombre || '',
+    telefono: r.telefono || '',
+    direccion: r.direccion || '',
+    valor: String(r.valor != null ? r.valor : '0'),
+    textoOriginal: r.texto_original || '',
+    mapUrl: r.map_url || '',
+    productos,
+    coords,
+    enCurso: !!r.en_curso,
+    posicionPendiente: Number.isInteger(Number(r.posicion_pendiente)) ? Number(r.posicion_pendiente) : null,
+    entregado: !!r.entregado,
+    noEntregado: !!r.no_entregado,
+    envioRecogido: !!r.envio_recogido,
+    notificadoEnCamino: !!r.notificado_en_camino,
+    llegoDestino: !!r.llego_destino,
+    cancelado: !!r.cancelado,
+    metodoPagoEntrega: r.metodo_pago_entrega || '',
+    montoNequi: Number(r.monto_nequi || 0),
+    montoDaviplata: Number(r.monto_daviplata || 0),
+    montoEfectivo: Number(r.monto_efectivo || 0)
+  };
+}
+
+function pedidoToRow(p, sortIndex) {
+  return {
+    id: p.id,
+    assigned_to: normalizarUuidAsignacion(p.assignedTo),
+    created_by: p.createdBy || sesionActiva?.user?.id || null,
+    nombre: p.nombre || '',
+    telefono: p.telefono || '',
+    direccion: p.direccion || '',
+    valor: String(p.valor || '0'),
+    map_url: p.mapUrl || null,
+    texto_original: p.textoOriginal || null,
+    coords_lat: p.coords && Number.isFinite(Number(p.coords.lat)) ? Number(p.coords.lat) : null,
+    coords_lng: p.coords && Number.isFinite(Number(p.coords.lng)) ? Number(p.coords.lng) : null,
+    productos: p.productos || [],
+    en_curso: !!p.enCurso,
+    posicion_pendiente: Number.isInteger(p.posicionPendiente) ? p.posicionPendiente : null,
+    entregado: !!p.entregado,
+    no_entregado: !!p.noEntregado,
+    envio_recogido: !!p.envioRecogido,
+    notificado_en_camino: !!p.notificadoEnCamino,
+    llego_destino: !!p.llegoDestino,
+    cancelado: !!p.cancelado,
+    metodo_pago_entrega: p.metodoPagoEntrega || '',
+    monto_nequi: Number(p.montoNequi || 0),
+    monto_daviplata: Number(p.montoDaviplata || 0),
+    monto_efectivo: Number(p.montoEfectivo || 0),
+    sort_index: sortIndex,
+    updated_at: new Date().toISOString()
+  };
+}
+
+function esErrorLockAuthSupabase(msg) {
+  return /lock:sb-|stole it|released because another request/i.test(String(msg || ''));
+}
+
+function pausaMs(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function withTimeout(promise, ms, etiqueta) {
+  const resultado = await Promise.race([
+    promise,
+    pausaMs(ms).then(() => ({ __timeout: true }))
+  ]);
+  if (resultado && resultado.__timeout) {
+    return { __timeout: true, etiqueta };
+  }
+  return resultado;
+}
+
+/** Evita quedarse en “Comprobando sesión…” si getSession() no termina (pocos segundos bastan). */
+async function obtenerSesionInicialConTimeout(ms) {
+  try {
+    const resultado = await Promise.race([
+      supabaseCliente.auth.getSession(),
+      pausaMs(ms).then(() => ({ __timeout: true }))
+    ]);
+    if (resultado && resultado.__timeout) {
+      console.warn('getSession superó el tiempo de espera; se muestra el login.');
+      return { session: null, error: null };
+    }
+    const err = resultado?.error ?? null;
+    const session = resultado?.data?.session ?? null;
+    return { session, error: err };
+  } catch (e) {
+    console.error(e);
+    return { session: null, error: e };
+  }
+}
+
+async function cargarPedidosDesdeSupabase() {
+  if (!supabaseCliente || !sesionActiva) return;
+  try {
+    const { data: sesWrap } = await supabaseCliente.auth.getSession();
+    if (sesWrap?.session) sesionActiva = sesWrap.session;
+  } catch (_e) {}
+  const maxIntentos = 4;
+  for (let intento = 0; intento < maxIntentos; intento++) {
+    const res = await withTimeout(
+      supabaseCliente
+        .from('pedidos')
+        .select('*')
+        .order('sort_index', { ascending: true })
+        .order('id', { ascending: true }),
+      8000,
+      'pedidos.select'
+    );
+    if (res && res.__timeout) {
+      // Fallback REST directo (evita cuelgues por getSession()).
+      try {
+        const token = sesionActiva?.access_token;
+        const url = `${window.SUPABASE_URL}/rest/v1/pedidos?select=*&order=sort_index.asc,id.asc`;
+        const resp = await withTimeout(
+          fetch(url, {
+            headers: {
+              apikey: window.SUPABASE_ANON_KEY,
+              Authorization: `Bearer ${token}`
+            }
+          }),
+          8000,
+          'pedidos.fetch'
+        );
+        if (resp && resp.__timeout) {
+          continue;
+        }
+        if (!resp || !resp.ok) {
+          const status = resp ? resp.status : 'ERR';
+          console.warn('[app-delivery] pedidos REST HTTP', status);
+          continue;
+        }
+        const dataJson = await resp.json();
+        const rows = Array.isArray(dataJson) ? dataJson : [];
+        if (rows.length === 0) {
+          // Si por red/RLS llega vacío, no borres lo que ya tenemos en cache local.
+          if (!Array.isArray(pedidos) || pedidos.length === 0) {
+            pedidos = deduplicarPedidosPorId(cargarCachePedidos());
+          }
+        } else {
+          const mapped = rows.map(rowToPedidoSeguro).filter((p) => p != null);
+          if (rows.length > 0 && mapped.length === 0) {
+            console.error('[app-delivery] pedidos: el servidor devolvió filas pero ninguna se pudo leer (revisa datos en public.pedidos).');
+          }
+          pedidos = deduplicarPedidosPorId(mapped);
+          guardarCachePedidos();
+        }
+        if (pedidos.length > 0) nextPedidoId = Math.max(...pedidos.map((p) => p.id), 0) + 1;
+        else nextPedidoId = 1;
+        return;
+      } catch (e) {
+        console.error(e);
+        continue;
+      }
+    }
+    const { data, error } = res || {};
+    if (!error) {
+      const rows = data || [];
+      if (rows.length === 0) {
+        // No borrar cache local si supabase devuelve vacío.
+        if (!Array.isArray(pedidos) || pedidos.length === 0) {
+          pedidos = deduplicarPedidosPorId(cargarCachePedidos());
+        }
+      } else {
+        const mapped = rows.map(rowToPedidoSeguro).filter((p) => p != null);
+        if (rows.length > 0 && mapped.length === 0) {
+          console.error('[app-delivery] pedidos: el servidor devolvió filas pero ninguna se pudo leer (revisa datos en public.pedidos).');
+        }
+        pedidos = deduplicarPedidosPorId(mapped);
+        guardarCachePedidos();
+      }
+      if (pedidos.length > 0) {
+        nextPedidoId = Math.max(...pedidos.map((p) => p.id), 0) + 1;
+      } else {
+        nextPedidoId = 1;
+      }
+      return;
+    }
+    console.error(error);
+    const msg = String(error.message || '');
+    if (esErrorLockAuthSupabase(msg) && intento < maxIntentos - 1) {
+      await pausaMs(180 + intento * 280);
+      continue;
+    }
+    alert('No se pudieron cargar los pedidos: ' + msg);
+    return;
+  }
+}
+
+async function persistPedidosToSupabase(opciones = {}) {
+  if (!supabaseCliente || !sesionActiva) return;
+  const rows = pedidos.map((p, i) => pedidoToRow(p, i));
+  if (rows.length === 0) return;
+  const silent = !!opciones.silent;
+
+  const intentarUpsertRest = async () => {
+    const token = sesionActiva?.access_token;
+    const url = `${window.SUPABASE_URL}/rest/v1/pedidos?on_conflict=id`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        apikey: window.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates,return=minimal'
+      },
+      body: JSON.stringify(rows),
+      // keepalive solo ayuda en unload, pero también puede fallar; lo dejamos por defecto.
+      keepalive: !!opciones.keepalive
+    });
+    return resp;
+  };
+
+  try {
+    const res = await withTimeout(
+      supabaseCliente.from('pedidos').upsert(rows, { onConflict: 'id' }),
+      8000,
+      'pedidos.upsert'
+    );
+    if (res && res.__timeout) {
+      const resp = await intentarUpsertRest();
+      if (!resp.ok) {
+        console.warn('[app-delivery] pedidos upsert REST HTTP', resp.status);
+        if (!silent) alert('Error al guardar pedidos (HTTP ' + resp.status + ').');
+      }
+      return;
+    }
+    const { error } = res || {};
+    if (!error) return;
+
+    console.error(error);
+    // Si el cliente falló por red, intentamos REST.
+    try {
+      const resp = await intentarUpsertRest();
+      if (!resp.ok) {
+        console.warn('[app-delivery] pedidos upsert REST HTTP', resp.status);
+        if (!silent) alert('Error al guardar pedidos (HTTP ' + resp.status + ').');
+      }
+      return;
+    } catch (e2) {
+      console.error(e2);
+      if (!silent) alert('Error al guardar pedidos: ' + (error.message || 'Fallo de red'));
+      return;
+    }
+  } catch (e) {
+    console.error(e);
+    try {
+      const resp = await intentarUpsertRest();
+      if (!resp.ok) {
+        console.warn('[app-delivery] pedidos upsert REST HTTP', resp.status);
+        if (!silent) alert('Error al guardar pedidos (HTTP ' + resp.status + ').');
+      }
+    } catch (e2) {
+      console.error(e2);
+      if (!silent) alert('Error al guardar pedidos: ' + (e.message || 'Fallo de red'));
+    }
+  }
+}
+
+function programarRecargaPedidosPorRealtime() {
+  if (recargaPedidosRealtimeTimer) clearTimeout(recargaPedidosRealtimeTimer);
+  recargaPedidosRealtimeTimer = setTimeout(() => {
+    recargaPedidosRealtimeTimer = null;
+    if (!sesionActiva) return;
+    cargarPedidosDesdeSupabase().then(() => {
+      renderPedidos();
+      actualizarMarcadores();
+    });
+  }, 500);
+}
+
+function suscribirRealtimePedidos() {
+  if (!supabaseCliente || !sesionActiva || canalRealtimePedidos) return;
+  canalRealtimePedidos = supabaseCliente
+    .channel('pedidos-cambios')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'pedidos' }, () => {
+      programarRecargaPedidosPorRealtime();
+    })
+    .subscribe();
+}
+
+function desuscribirRealtimePedidos() {
+  if (recargaPedidosRealtimeTimer) {
+    clearTimeout(recargaPedidosRealtimeTimer);
+    recargaPedidosRealtimeTimer = null;
+  }
+  if (canalRealtimePedidos && supabaseCliente) {
+    supabaseCliente.removeChannel(canalRealtimePedidos);
+    canalRealtimePedidos = null;
+  }
+}
+
+function inicializarClienteSupabase() {
+  const url = typeof window !== 'undefined' ? window.SUPABASE_URL : '';
+  const key = typeof window !== 'undefined' ? window.SUPABASE_ANON_KEY : '';
+  if (!url || !key || String(url).includes('TU-PROYECTO') || String(key).includes('TU_CLAVE')) {
+    alert('Configura SUPABASE_URL y SUPABASE_ANON_KEY en supabase-config.js (copia desde supabase-config.example.js).');
+    return null;
+  }
+  const { createClient } = window.supabase;
+  if (!createClient) {
+    alert('No se cargó la librería de Supabase.');
+    return null;
+  }
+  const client = createClient(url, key, {
+    auth: {
+      // lock: false NO desactiva el LockManager (es falsy y gotrue cae en navigator.locks).
+      // Hay que pasar un lock explícito que ejecute el callback sin Web Locks.
+      lock: async (_name, _acquireTimeout, fn) => await fn(),
+      // Evita choques con otros clientes GoTrue en el mismo navegador (incluye pruebas en consola).
+      // Si se comparte storageKey, getSession() puede quedarse colgado por locks/carreras.
+      storageKey: 'app-delivery-auth',
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: true
+    }
+  });
+  try { window.supabaseCliente = client; } catch (_e) {}
+  return client;
+}
+
+function filaPerfilDesdeRpc(data) {
+  if (data == null) return null;
+  if (Array.isArray(data)) return data[0] ?? null;
+  return data;
+}
+
+/** PostgREST / RPC pueden devolver filas con matices de forma; unificamos a lo que usa la app. */
+function perfilNormalizadoDesdeFila(row) {
+  if (!row || typeof row !== 'object') return null;
+  const id = row.id;
+  if (!id) return null;
+  const roleRaw = row.role ?? row.Role;
+  const email = row.email ?? row.Email ?? '';
+  const full_name = row.full_name ?? row.fullName ?? '';
+  const created_at = row.created_at ?? row.createdAt ?? null;
+  return {
+    id,
+    email: String(email || ''),
+    full_name: String(full_name || ''),
+    role: String(roleRaw != null ? roleRaw : 'repartidor')
+      .toLowerCase()
+      .trim() || 'repartidor',
+    created_at
+  };
+}
+
+function rpcDevuelveVerdadero(data) {
+  if (data === true || data === 'true' || data === 't' || data === 1 || data === '1') return true;
+  if (Array.isArray(data)) {
+    if (data.length === 0) return false;
+    return rpcDevuelveVerdadero(data[0]);
+  }
+  if (data && typeof data === 'object') {
+    if (Object.prototype.hasOwnProperty.call(data, 'is_admin')) {
+      return rpcDevuelveVerdadero(data.is_admin);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'value')) {
+      return rpcDevuelveVerdadero(data.value);
+    }
+    const vals = Object.values(data);
+    if (vals.length === 1) return rpcDevuelveVerdadero(vals[0]);
+  }
+  return false;
+}
+
+/** Si la BD dice que eres admin (función is_admin), fuerza role admin en memoria (repara RLS, caché o columnas raras). */
+async function aplicarPerfilAdminSiIsAdminRpc() {
+  if (!supabaseCliente || !sesionActiva?.user?.id) return false;
+  if (esAdmin()) return true;
+  const { data, error } = await supabaseCliente.rpc('is_admin');
+  if (error) {
+    console.warn('[app-delivery] RPC is_admin:', error.message);
+    return false;
+  }
+  if (!rpcDevuelveVerdadero(data)) return false;
+  const u = sesionActiva.user;
+  if (perfilUsuario && perfilUsuario.id === u.id) {
+    perfilUsuario = { ...perfilUsuario, role: 'admin' };
+  } else {
+    perfilUsuario = {
+      id: u.id,
+      email: u.email || '',
+      full_name: (u.user_metadata && u.user_metadata.full_name) || '',
+      role: 'admin',
+      created_at: perfilUsuario && perfilUsuario.created_at ? perfilUsuario.created_at : null
+    };
+  }
+  marcarHintAdminSesion(u.id);
+  return true;
+}
+
+async function asegurarUIAdminDesdeRpc() {
+  if (!sesionActiva?.user?.id) return;
+  // Si ya es admin, igual puede faltar cargar la lista de usuarios tras recargar.
+  if (!esAdmin()) {
+    const ok = await aplicarPerfilAdminSiIsAdminRpc();
+    if (!ok) return;
+  }
+  syncMainAdminClass();
+  const taPegar = document.getElementById('textoPedido');
+  if (taPegar) taPegar.readOnly = false;
+  const btnProc = document.getElementById('btnProcesarPedido');
+  if (btnProc) btnProc.disabled = false;
+  const panelAdmin = document.getElementById('panelAdmin');
+  if (panelAdmin) panelAdmin.style.display = 'block';
+  const btnElim = document.getElementById('btnEliminarTodos');
+  if (btnElim) btnElim.style.display = 'inline-flex';
+  void cargarUsuariosParaAdmin().then(() => {
+    try {
+      renderPedidos();
+      actualizarMarcadores();
+    } catch (_e) {}
+  });
+}
+
+async function refrescarPerfilUsuario() {
+  try {
+    if (!supabaseCliente || !sesionActiva?.user?.id) {
+      perfilUsuario = null;
+      return;
+    }
+    // En recarga, no esconder secciones admin mientras llega la verificación remota.
+    aplicarHintAdminSesion();
+    const { data: rpcData, error: rpcError } = await supabaseCliente.rpc('get_my_profile');
+    if (!rpcError) {
+      const row = perfilNormalizadoDesdeFila(filaPerfilDesdeRpc(rpcData));
+      if (row) {
+        perfilUsuario = row;
+        return;
+      }
+    } else if (!String(rpcError.message || '').includes('get_my_profile')) {
+      console.error(rpcError);
+    }
+
+    const maxIntentos = 3;
+    for (let intento = 0; intento < maxIntentos; intento++) {
+      const { data, error } = await supabaseCliente
+        .from('profiles')
+        .select('id,email,full_name,role,created_at')
+        .eq('id', sesionActiva.user.id)
+        .maybeSingle();
+      if (!error) {
+        if (data === null && intento < maxIntentos - 1) {
+          await pausaMs(350 + intento * 200);
+          continue;
+        }
+        perfilUsuario = data ? perfilNormalizadoDesdeFila(data) : null;
+        if (perfilUsuario === null) {
+          console.warn(
+            '[app-delivery] No hay fila en public.profiles para tu usuario (id = auth.uid). La app usa esa tabla para el rol admin, no el panel de Authentication.'
+          );
+        }
+        return;
+      }
+      console.error(error);
+      const msg = String(error.message || '');
+      if (esErrorLockAuthSupabase(msg) && intento < maxIntentos - 1) {
+        await pausaMs(120 + intento * 180);
+        continue;
+      }
+      perfilUsuario = null;
+      return;
+    }
+  } finally {
+    try {
+      if (sesionActiva?.user?.id) {
+        await aplicarPerfilAdminSiIsAdminRpc();
+      }
+    } catch (e) {
+      console.warn(e);
+    }
+    syncMainAdminClass();
+  }
+}
+
+async function cargarUsuariosParaAdmin() {
+  if (!supabaseCliente || !sesionActiva?.user?.id) return;
+  if (cargaUsuariosAdminEnCurso) return;
+  // En recargas puede estar admin “visual” (hint) pero aún no aplicado en perfilUsuario.
+  // Intentamos elevar por RPC antes de abandonar.
+  if (!esAdmin()) {
+    try { await aplicarPerfilAdminSiIsAdminRpc(); } catch (_e) {}
+  }
+  if (!esAdmin()) return;
+  cargaUsuariosAdminEnCurso = true;
+  const cont = document.getElementById('listaUsuariosAdmin');
+  if (cont && (!usuariosRegistrados || usuariosRegistrados.length === 0)) {
+    const cache = cargarCacheUsuariosAdmin();
+    if (cache.length > 0) {
+      usuariosRegistrados = cache;
+      renderPanelAdminUsuarios();
+    } else {
+      cont.innerHTML = `<div class="admin-usuarios-ayuda">Cargando usuarios…</div>`;
+    }
+  }
+
+  try {
+    const maxIntentos = 3;
+    for (let intento = 0; intento < maxIntentos; intento++) {
+      console.debug('[app-delivery] cargarUsuariosParaAdmin intento', intento + 1);
+      const res = await withTimeout(
+        supabaseCliente
+          .from('profiles')
+          .select('id,email,full_name,role,created_at')
+          .order('created_at', { ascending: true }),
+        8000,
+        'profiles.select'
+      );
+      if (res && res.__timeout) {
+        // Fallback: si la librería se cuelga esperando getSession(), usa REST directo con access_token.
+        try {
+          const url = `${window.SUPABASE_URL}/rest/v1/profiles?select=id,email,full_name,role,created_at&order=created_at.asc`;
+          const token = sesionActiva?.access_token;
+          const resp = await withTimeout(
+            fetch(url, {
+              headers: {
+                apikey: window.SUPABASE_ANON_KEY,
+                Authorization: `Bearer ${token}`
+              }
+            }),
+            8000,
+            'profiles.fetch'
+          );
+          if (resp && resp.__timeout) {
+            if (cont) {
+              cont.innerHTML = `<div class="admin-usuarios-ayuda">Tiempo de espera cargando usuarios. Revisa tu conexión y recarga.</div>`;
+            }
+            return;
+          }
+          if (!resp || !resp.ok) {
+            const status = resp ? resp.status : 'ERR';
+            if (cont) {
+              cont.innerHTML = `<div class="admin-usuarios-ayuda">No se pudieron cargar usuarios (HTTP ${escapeHtmlAttr(String(status))}).</div>`;
+            }
+            return;
+          }
+          const dataJson = await resp.json();
+          usuariosRegistrados = (Array.isArray(dataJson) ? dataJson : []).map((u) => ({
+            ...u,
+            role: String(u.role || '').toLowerCase().trim()
+          }));
+          renderPanelAdminUsuarios();
+          guardarCacheUsuariosAdmin();
+          try {
+            renderPedidos();
+            actualizarMarcadores();
+          } catch (_e) {}
+          return;
+        } catch (e) {
+          console.error(e);
+          if (cont) {
+            cont.innerHTML = `<div class="admin-usuarios-ayuda">No se pudieron cargar usuarios. Revisa tu conexión y recarga.</div>`;
+          }
+          return;
+        }
+      }
+      const { data, error } = res || {};
+      if (!error) {
+        usuariosRegistrados = (data || []).map((u) => ({
+          ...u,
+          role: String(u.role || '').toLowerCase().trim()
+        }));
+        renderPanelAdminUsuarios();
+        guardarCacheUsuariosAdmin();
+        try {
+          renderPedidos();
+          actualizarMarcadores();
+        } catch (_e) {}
+        return;
+      }
+      console.error(error);
+      const msg = String(error.message || '');
+      if (esErrorLockAuthSupabase(msg) && intento < maxIntentos - 1) {
+        await pausaMs(180 + intento * 260);
+        continue;
+      }
+      if (cont) {
+        cont.innerHTML = `<div class="admin-usuarios-ayuda">No se pudieron cargar usuarios: ${escapeHtmlAttr(msg)}</div>`;
+      }
+      return;
+    }
+  } finally {
+    cargaUsuariosAdminEnCurso = false;
+  }
+}
+
+function renderPanelAdminUsuarios() {
+  const cont = document.getElementById('listaUsuariosAdmin');
+  if (!cont || !esAdmin()) return;
+  if (usuariosRegistrados.length === 0) {
+    cont.innerHTML = '<p class="admin-sin-usuarios">No hay usuarios.</p>';
+    return;
+  }
+  cont.innerHTML = usuariosRegistrados.map((u) => {
+    const esYo = u.id === sesionActiva?.user?.id;
+    const disabled = esYo ? 'disabled' : '';
+    return `
+      <div class="admin-usuario-fila" data-user-id="${u.id}">
+        <div class="admin-usuario-datos">
+          <strong>${(u.full_name || '').trim() || '(Sin nombre)'}</strong>
+          <span class="admin-usuario-email">Usuario: ${escapeHtmlAttr(usuarioLoginVisible(u.email))}</span>
+          <span class="admin-usuario-rol">Rol actual: <b>${u.role}</b></span>
+        </div>
+        <div class="admin-usuario-acciones">
+          <select class="admin-rol-select" data-user-id="${u.id}" ${disabled}>
+            <option value="repartidor" ${u.role === 'repartidor' ? 'selected' : ''}>Repartidor</option>
+            <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Administrador</option>
+          </select>
+          <button type="button" class="btn-primary btn-sm" onclick="aplicarCambioRolDesdeFila('${u.id}')" ${disabled}>Guardar rol</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function aplicarCambioRolDesdeFila(userId) {
+  if (!esAdmin() || userId === sesionActiva?.user?.id) return;
+  const sel = document.querySelector(`.admin-rol-select[data-user-id="${userId}"]`);
+  if (!sel) return;
+  const nuevoRol = sel.value;
+  const { error } = await supabaseCliente.from('profiles').update({ role: nuevoRol }).eq('id', userId);
+  if (error) {
+    alert('No se pudo actualizar el rol: ' + error.message);
+    return;
+  }
+  await cargarUsuariosParaAdmin();
+  alert('Rol actualizado.');
+}
+
+async function asignarPedidoRepartidor(pedidoId, repartidorIdRaw) {
+  if (!esAdmin() || !supabaseCliente) return;
+  cancelarPersistPedidosPendiente();
+  const repartidorId = normalizarUuidAsignacion(repartidorIdRaw);
+  const { data, error } = await supabaseCliente
+    .from('pedidos')
+    .update({ assigned_to: repartidorId, updated_at: new Date().toISOString() })
+    .eq('id', pedidoId)
+    .select('id');
+  if (error) {
+    alert('No se pudo asignar: ' + error.message);
+    return;
+  }
+  if (!data || data.length === 0) {
+    alert('No se actualizó el pedido (revisa que seas admin en Supabase y que exista el pedido).');
+    return;
+  }
+  const p = pedidos.find(x => x.id === pedidoId);
+  if (p) p.assignedTo = repartidorId;
+  guardarPedidos();
+  renderPedidos();
+  actualizarMarcadores();
+}
+
+function asignarPedidoDesdeTarjeta(pedidoId) {
+  const sel = document.getElementById(`asignar-select-${pedidoId}`);
+  asignarPedidoRepartidor(pedidoId, sel ? sel.value : '');
+}
+
+async function asignarSeccionPedidos(claseExtra) {
+  if (!esAdmin() || !supabaseCliente) return;
+  const sel = document.getElementById(`asignar-seccion-${claseExtra}`);
+  if (!sel) return;
+  const repartidorId = normalizarUuidAsignacion(sel.value);
+  if (!repartidorId) {
+    alert('Elige un repartidor en el desplegable antes de usar «Asignar todos».');
+    return;
+  }
+  cancelarPersistPedidosPendiente();
+  const ids = pedidos
+    .filter((p) => {
+      if (p.cancelado || p.entregado) return false;
+      if (claseExtra === 'seccion-en-curso') return !!p.enCurso;
+      if (claseExtra === 'seccion-pendientes') return !p.enCurso;
+      return false;
+    })
+    .map((p) => p.id);
+  if (ids.length === 0) {
+    alert('No hay pedidos en esta sección para asignar (revisa la pestaña Pendientes / En ruta).');
+    return;
+  }
+  const CHUNK = 80;
+  let totalActualizados = 0;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const { data, error } = await supabaseCliente
+      .from('pedidos')
+      .update({ assigned_to: repartidorId, updated_at: new Date().toISOString() })
+      .in('id', chunk)
+      .select('id');
+    if (error) {
+      alert('No se pudo asignar la sección: ' + error.message);
+      return;
+    }
+    totalActualizados += (data && data.length) ? data.length : 0;
+  }
+  if (totalActualizados !== ids.length) {
+    alert(
+      totalActualizados === 0
+        ? 'No se pudo asignar ningún pedido en el servidor (revisa rol administrador en Supabase o permisos RLS sobre pedidos).'
+        : `Solo se actualizaron ${totalActualizados} de ${ids.length} pedidos. ` +
+            'El repartidor no verá los que falten hasta corregir permisos.'
+    );
+    await cargarPedidosDesdeSupabase();
+    renderPedidos();
+    actualizarMarcadores();
+    return;
+  }
+  pedidos.forEach((p) => {
+    if (ids.includes(p.id)) p.assignedTo = repartidorId;
+  });
+  guardarPedidos();
+  renderPedidos();
+  actualizarMarcadores();
+}
+
+function escapeHtmlAttr(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/"/g, '&quot;');
+}
+
+function mostrarTabAuth(tab) {
+  const loginForm = document.getElementById('authFormLogin');
+  const regForm = document.getElementById('authFormRegistro');
+  const tabLogin = document.getElementById('authTabLogin');
+  const tabReg = document.getElementById('authTabRegistro');
+  const errL = document.getElementById('authErrorLogin');
+  const errR = document.getElementById('authErrorRegistro');
+  if (errL) errL.style.display = 'none';
+  if (errR) errR.style.display = 'none';
+  if (tab === 'registro') {
+    if (loginForm) loginForm.style.display = 'none';
+    if (regForm) regForm.style.display = 'block';
+    if (tabLogin) tabLogin.classList.remove('active');
+    if (tabReg) tabReg.classList.add('active');
+  } else {
+    if (loginForm) loginForm.style.display = 'block';
+    if (regForm) regForm.style.display = 'none';
+    if (tabLogin) tabLogin.classList.add('active');
+    if (tabReg) tabReg.classList.remove('active');
+  }
+}
+
+function opcionesSelectRepartidores(pedido) {
+  const opts = ['<option value="">Sin asignar</option>'];
+  const normalizarRol = (r) => String(r || '').toLowerCase().trim();
+  const uidSesion = normalizarUuidAsignacion(sesionActiva?.user?.id);
+  const repartidores = usuariosRegistrados.filter((u) => {
+    if (normalizarUuidAsignacion(u.id) === uidSesion) return false;
+    return normalizarRol(u.role) === 'repartidor';
+  });
+  if (repartidores.length === 0 && usuariosRegistrados.some((u) => normalizarUuidAsignacion(u.id) !== uidSesion)) {
+    opts.push(
+      '<option value="" disabled>Nadie con rol Repartidor (cámbialo abajo en «Usuarios registrados»)</option>'
+    );
+  }
+  repartidores.forEach((u) => {
+    const uid = normalizarUuidAsignacion(u.id);
+    const sel = uid && pedido.assignedTo && pedido.assignedTo === uid ? ' selected' : '';
+    const login = usuarioLoginVisible(u.email);
+    const label = `${(u.full_name || '').trim() || login || u.id}${login ? ' · ' + login : ''}`;
+    opts.push(`<option value="${uid || ''}"${sel}>${escapeHtmlAttr(label)}</option>`);
+  });
+  return opts.join('');
+}
+
+function aplicarLayoutAuthFijo() {
+  document.documentElement.classList.add('auth-layout');
+  document.body.classList.add('auth-layout');
+}
+
+function quitarLayoutAuthFijo() {
+  document.documentElement.classList.remove('auth-layout');
+  document.body.classList.remove('auth-layout');
+}
+
+function mostrarAuthComprobandoSesion() {
+  aplicarLayoutAuthFijo();
+  const auth = document.getElementById('authScreen');
+  const main = document.getElementById('mainApp');
+  const msg = document.getElementById('authBootMessage');
+  const card = document.getElementById('authCard');
+  if (auth) auth.style.display = 'flex';
+  if (main) main.style.display = 'none';
+  if (msg) msg.style.display = 'block';
+  if (card) card.style.display = 'none';
+}
+
+function mostrarPantallaAuth() {
+  marcarPantallaLogin();
+  aplicarLayoutAuthFijo();
+  const main = document.getElementById('mainApp');
+  if (main) main.classList.remove('app-es-admin');
+  const auth = document.getElementById('authScreen');
+  const msg = document.getElementById('authBootMessage');
+  const card = document.getElementById('authCard');
+  if (auth) auth.style.display = 'flex';
+  if (main) main.style.display = 'none';
+  if (msg) msg.style.display = 'none';
+  if (card) card.style.display = 'block';
+  desuscribirRealtimePedidos();
+  if (mapa) {
+    try { mapa.remove(); } catch (e) {}
+    mapa = null;
+    marcadores = [];
+    mapaAjustado = false;
+  }
+}
+
+function mostrarAppPrincipal() {
+  marcarPantallaMain();
+  quitarLayoutAuthFijo();
+  const auth = document.getElementById('authScreen');
+  const main = document.getElementById('mainApp');
+  if (auth) auth.style.display = 'none';
+  if (main) main.style.display = 'block';
+  const elNombre = document.getElementById('headerUserNombre');
+  const elRol = document.getElementById('headerUserRol');
+  if (elNombre) {
+    elNombre.textContent = nombreParaMenuUsuario();
+  }
+  if (elRol) {
+    if (perfilUsuario) {
+      elRol.textContent = perfilUsuario.role === 'admin' ? 'Administrador' : 'Repartidor';
+    } else if (sesionActiva?.user) {
+      elRol.textContent = '';
+    } else {
+      elRol.textContent = '';
+    }
+  }
+  syncMainAdminClass();
+  const adminUi = esAdminVisual();
+  const taPegar = document.getElementById('textoPedido');
+  if (taPegar) taPegar.readOnly = !adminUi;
+  const btnProc = document.getElementById('btnProcesarPedido');
+  if (btnProc) btnProc.disabled = !adminUi;
+  const panelAdmin = document.getElementById('panelAdmin');
+  if (panelAdmin) panelAdmin.style.display = adminUi ? 'block' : 'none';
+  const btnElim = document.getElementById('btnEliminarTodos');
+  if (btnElim) btnElim.style.display = adminUi ? 'inline-flex' : 'none';
+  const btnMediosPagoMenu = document.getElementById('btnMediosPagoMenu');
+  if (btnMediosPagoMenu) btnMediosPagoMenu.style.display = adminUi ? 'none' : 'flex';
+  if (adminUi) {
+    void cargarUsuariosParaAdmin().then(() => {
+      try {
+        renderPedidos();
+        actualizarMarcadores();
+      } catch (e) {
+        console.error('[app-delivery] renderPedidos tras cargar usuarios', e);
+      }
+    });
+  }
+  // Importante: si los pedidos vienen del cache local o llegan antes del boot,
+  // renderizar siempre las tarjetas al entrar/recargar.
+  try {
+    renderPedidos();
+  } catch (e) {
+    console.error('[app-delivery] renderPedidos en mostrarAppPrincipal', e);
+  }
+  // Refuerzo: en recargas, si profiles tarda/falla pero is_admin() ya dice true, reactivar UI admin.
+  void asegurarUIAdminDesdeRpc();
+  // Segundo refuerzo: cuando el arranque dispara varias consultas en paralelo,
+  // Supabase puede devolver “lock” momentáneo; reintentamos 2 veces.
+  setTimeout(() => { void asegurarUIAdminDesdeRpc(); }, 1800);
+  // Si por cualquier razón el boot no pobló perfilUsuario, recargar perfil y repintar UI.
+  if (!perfilUsuario && sesionActiva?.user?.id) {
+    setTimeout(() => {
+      if (refrescoPerfilEnCurso || !sesionActiva?.user?.id) return;
+      refrescoPerfilEnCurso = true;
+      Promise.resolve()
+        .then(() => refrescarPerfilUsuario())
+        .then(() => {
+          if (!sesionActiva) return;
+          // Re-render para reflejar rol/header y secciones admin.
+          const elNombre2 = document.getElementById('headerUserNombre');
+          const elRol2 = document.getElementById('headerUserRol');
+          if (elNombre2) elNombre2.textContent = nombreParaMenuUsuario();
+          if (elRol2) {
+            if (perfilUsuario) elRol2.textContent = perfilUsuario.role === 'admin' ? 'Administrador' : 'Repartidor';
+            else elRol2.textContent = '';
+          }
+          syncMainAdminClass();
+          void asegurarUIAdminDesdeRpc();
+        })
+        .finally(() => { refrescoPerfilEnCurso = false; });
+    }, 450);
+  }
+  // En algunos recargos el layout termina después del primer paint; forzamos repintado del mapa.
+  requestAnimationFrame(() => {
+    if (!sesionActiva) return;
+    try {
+      if (!mapa) initMap();
+      else {
+        mapaAjustado = false;
+        actualizarMarcadores();
+        ajustarMapaConReintentos();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  });
+}
+
+function cerrarMenuUsuario() {
+  const panel = document.getElementById('menuUsuarioPanel');
+  const btn = document.getElementById('btnMenuUsuario');
+  if (panel) panel.style.display = 'none';
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+function toggleMenuUsuario(ev) {
+  if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+  const panel = document.getElementById('menuUsuarioPanel');
+  const btn = document.getElementById('btnMenuUsuario');
+  if (!panel || !btn) return;
+  const abierto = panel.style.display === 'block';
+  panel.style.display = abierto ? 'none' : 'block';
+  btn.setAttribute('aria-expanded', abierto ? 'false' : 'true');
+}
+
+async function iniciarSesion() {
+  const usuario = document.getElementById('loginUsuario')?.value?.trim();
+  const password = document.getElementById('loginPassword')?.value || '';
+  const errEl = document.getElementById('authErrorLogin');
+  const btn = document.getElementById('btnLoginEntrar');
+  if (errEl) errEl.style.display = 'none';
+  if (!usuario || !password) {
+    if (errEl) { errEl.textContent = 'Completa correo o usuario y contraseña.'; errEl.style.display = 'block'; }
+    return;
+  }
+  const email = emailDesdeCampoUsuario(usuario);
+  if (!email) {
+    if (errEl) { errEl.textContent = 'Correo o usuario no válido.'; errEl.style.display = 'block'; }
+    return;
+  }
+  const labelOriginal = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Entrando…';
+  }
+  enFlujoLoginManual = true;
+  try {
+    const { data, error } = await supabaseCliente.auth.signInWithPassword({ email, password });
+    if (error) {
+      enFlujoLoginManual = false;
+      if (errEl) { errEl.textContent = error.message; errEl.style.display = 'block'; }
+      return;
+    }
+    if (data?.session) {
+      sesionActiva = data.session;
+      // Asegura rol/metadata antes de pintar UI (evita quedar como "Repartidor" tras salir/entrar).
+      try { await refrescarPerfilUsuario(); } catch (_e) {}
+      try { await aplicarPerfilAdminSiIsAdminRpc(); } catch (_e) {}
+      mostrarAppPrincipal();
+      void bootSesionYDatos()
+        .catch((bootErr) => {
+          console.error(bootErr);
+          if (sesionActiva) mostrarAppPrincipal();
+        })
+        .finally(() => {
+          enFlujoLoginManual = false;
+        });
+    } else {
+      enFlujoLoginManual = false;
+    }
+  } catch (e) {
+    enFlujoLoginManual = false;
+    console.error(e);
+    if (errEl) {
+      errEl.textContent = 'No se pudo conectar. Revisa la red o la configuración de Supabase.';
+      errEl.style.display = 'block';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = labelOriginal || 'Entrar';
+    }
+  }
+}
+
+function correoElectronicoValido(correo) {
+  const s = String(correo || '').trim().toLowerCase();
+  if (!s || !s.includes('@')) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+}
+
+async function registrarUsuario() {
+  const nombre = document.getElementById('regNombre')?.value?.trim() || '';
+  const correoRaw = document.getElementById('regEmail')?.value?.trim() || '';
+  const usuario = document.getElementById('regUsuario')?.value?.trim();
+  const password = document.getElementById('regPassword')?.value || '';
+  const errEl = document.getElementById('authErrorRegistro');
+  if (!correoRaw || !usuario || !password) {
+    if (errEl) { errEl.textContent = 'Completa correo, usuario y contraseña.'; errEl.style.display = 'block'; }
+    return;
+  }
+  if (!correoElectronicoValido(correoRaw)) {
+    if (errEl) { errEl.textContent = 'Ingresa un correo electrónico válido.'; errEl.style.display = 'block'; }
+    return;
+  }
+  if (password.length < 6) {
+    if (errEl) { errEl.textContent = 'La contraseña debe tener al menos 6 caracteres.'; errEl.style.display = 'block'; }
+    return;
+  }
+  const emailRegistro = correoRaw.toLowerCase().trim();
+  const emailUsuarioInterno = emailDesdeCampoUsuario(usuario);
+  if (!emailUsuarioInterno) {
+    if (errEl) { errEl.textContent = 'Elige otro usuario (solo letras, números, puntos y guiones).'; errEl.style.display = 'block'; }
+    return;
+  }
+  const { error } = await supabaseCliente.auth.signUp({
+    email: emailRegistro,
+    password,
+    options: { data: { full_name: nombre, app_username: usuario } }
+  });
+  if (error) {
+    if (errEl) { errEl.textContent = error.message; errEl.style.display = 'block'; }
+    return;
+  }
+  if (errEl) {
+    errEl.textContent = 'Cuenta creada. Ya puedes entrar con tu correo y contraseña.';
+    errEl.style.display = 'block';
+    errEl.style.color = '#15803d';
+  }
+  mostrarTabAuth('login');
+}
+
+async function cerrarSesion() {
+  cerrarMenuUsuario();
+  const client = supabaseCliente;
+  reiniciarMarcaUltimoBoot();
+  const uid = sesionActiva?.user?.id;
+  limpiarCachePedidosUsuario(uid);
+  pedidos = [];
+  perfilUsuario = null;
+  sesionActiva = null;
+  limpiarHintAdminSesion();
+  try { localStorage.removeItem(CACHE_USUARIOS_ADMIN_KEY); } catch (_e) {}
+  mostrarPantallaAuth();
+  syncMainAdminClass();
+  if (client) {
+    void client.auth.signOut({ scope: 'local' }).catch((e) => console.error(e));
+  }
 }
 
 function ajustarMapaConReintentos() {
@@ -660,9 +1847,21 @@ async function procesarMultiplesPedidos(texto) {
   alert(msg);
 }
 
+function cancelarPersistPedidosPendiente() {
+  if (persistTimeoutId) {
+    clearTimeout(persistTimeoutId);
+    persistTimeoutId = null;
+  }
+}
+
 function guardarPedidos() {
   pedidos = deduplicarPedidosPorId(pedidos);
   guardarCachePedidos();
+  cancelarPersistPedidosPendiente();
+  persistTimeoutId = setTimeout(() => {
+    persistTimeoutId = null;
+    void persistPedidosToSupabase();
+  }, 450);
 }
 
 function actualizarPestañasListaPedidos(pendientes, enCurso, entregados, cancelados) {
@@ -692,6 +1891,19 @@ function renderPedidos() {
   // Si en memoria quedaron duplicados (por cache o recargas), normalizar antes de pintar.
   pedidos = deduplicarPedidosPorId(pedidos);
   const lista = document.getElementById("listaPedidos");
+  if (!lista) {
+    console.error('[app-delivery] No existe #listaPedidos en el DOM');
+    return;
+  }
+  try {
+    renderPedidosContenido(lista);
+  } catch (e) {
+    console.error('[app-delivery] Error al pintar pedidos:', e);
+    lista.innerHTML = `<div class="empty-state" style="padding:16px;"><p>No se pudo mostrar la lista de pedidos.</p><p style="font-size:14px;">${escapeHtmlAttr(String(e && e.message ? e.message : e))}. Revisa la consola (F12).</p></div>`;
+  }
+}
+
+function renderPedidosContenido(lista) {
   const pendientes = [];
   const enCurso = [];
   const entregados = [];
@@ -784,6 +1996,7 @@ function renderPedidos() {
   ajustarMapaConReintentos();
 }
 
+
 function cambiarVistaPedidos(vista) {
   if (!['pendientes', 'enCurso', 'entregados', 'cancelados'].includes(vista)) return;
   let n = 0;
@@ -812,7 +2025,18 @@ function crearSeccionPedidos(claseExtra, items, textoVacio) {
   if (items.length === 0) {
     contenido.innerHTML = `<div class="empty-state" style="padding:20px;"><p style="font-size:15px;">${textoVacio}</p></div>`;
   } else {
-    items.forEach(({ pedido, index }) => contenido.appendChild(crearTarjetaPedido(pedido, index)));
+    items.forEach(({ pedido, index }) => {
+      try {
+        contenido.appendChild(crearTarjetaPedido(pedido, index));
+      } catch (err) {
+        console.error('[app-delivery] crearTarjetaPedido', pedido && pedido.id, err);
+        const aviso = document.createElement('div');
+        aviso.className = 'empty-state';
+        aviso.style.padding = '16px';
+        aviso.textContent = `No se pudo mostrar el pedido #${pedido && pedido.id != null ? pedido.id : '?'}. Revisa la consola (F12).`;
+        contenido.appendChild(aviso);
+      }
+    });
   }
 
   seccion.appendChild(contenido);
@@ -830,8 +2054,8 @@ function crearTarjetaPedido(pedido, index) {
   div.dataset.index = index;
   div.dataset.id = pedido.id;
 
-  const telefonoLimpio = pedido.telefono ? pedido.telefono.replace(/\D/g, '') : '';
-  const valorFormato = parseInt(pedido.valor || 0, 10).toLocaleString('es-CO');
+  const telefonoLimpio = String(pedido.telefono || '').replace(/\D/g, '');
+  const valorFormato = parseInt(String(pedido.valor || '0'), 10).toLocaleString('es-CO');
   const btnNoEntregadoHtml = pedido.entregado
     ? `<div class="pedido-no-entregado-wrap"><button class="btn-warning" onclick="marcarNoEntregado(${index})" style="width: 100%;"><i class="fa-solid fa-rotate-left"></i> No entregado</button></div>`
     : '';
@@ -888,7 +2112,7 @@ function crearTarjetaPedido(pedido, index) {
       <button class="btn-copy-inline" onclick="copiarDireccionPedido(${index})" title="Copiar dirección">
         <i class="fa-regular fa-copy"></i> Copiar
       </button><br>
-      <strong>Productos:</strong> ${Array.isArray(pedido.productos) && pedido.productos.length > 0 ? pedido.productos.join(', ') : 'No especificado'}<br>
+      <strong>Productos:</strong> ${Array.isArray(pedido.productos) && pedido.productos.length > 0 ? pedido.productos.map((x) => escapeHtmlAttr(String(x))).join(', ') : 'No especificado'}<br>
       <strong>Valor:</strong> $${valorFormato}<br>
     </div>
     ${etapaActual === 'enDestino' ? `
@@ -1189,6 +2413,31 @@ function eliminarPedido(index) {
   const pedido = pedidos[index];
   if (!pedido) return;
   if (!confirm(`¿Estás seguro de eliminar el pedido #${pedido.id}?`)) return;
+  const id = pedido.id == null ? null : Number(pedido.id);
+  if (id == null || !Number.isFinite(id)) {
+    alert('Id de pedido no válido.');
+    return;
+  }
+  cancelarPersistPedidosPendiente();
+  if (supabaseCliente) {
+    const { data, error } = await supabaseCliente.from('pedidos').delete().eq('id', id).select('id');
+    if (error) {
+      alert('Error al eliminar en el servidor: ' + error.message);
+      await cargarPedidosDesdeSupabase();
+      renderPedidos();
+      actualizarMarcadores();
+      return;
+    }
+    if (!data || data.length === 0) {
+      alert(
+        'El pedido no se eliminó en Supabase (0 filas). Suele deberse a políticas RLS o a que tu usuario no sea admin en la tabla profiles. Revisa el rol en Supabase.'
+      );
+      await cargarPedidosDesdeSupabase();
+      renderPedidos();
+      actualizarMarcadores();
+      return;
+    }
+  }
   pedidos.splice(index, 1);
   guardarPedidos();
   renderPedidos();
@@ -1287,8 +2536,50 @@ function reactivarPedidoCancelado(index) {
 
 function eliminarTodos() {
   if (!confirm("¿Estás seguro de eliminar TODOS los pedidos? Esta acción no se puede deshacer.")) return;
+  const prevPedidos = Array.isArray(pedidos) ? [...pedidos] : [];
+  const ids = prevPedidos.map((p) => p && p.id).filter((id) => id != null);
+
+  // Si no hay cliente o no hay nada que borrar, igual limpiamos cache/estado local.
+  if (!supabaseCliente || ids.length === 0) {
+    pedidos = [];
+    limpiarCachePedidosUsuario(sesionActiva?.user?.id);
+    guardarCachePedidos();
+    renderPedidos();
+    actualizarMarcadores();
+    return;
+  }
+
+  cancelarPersistPedidosPendiente();
+  const idsNum = ids.map((x) => Number(x)).filter((n) => Number.isFinite(n));
+  const CHUNK_DEL = 80;
+  let totalBorrados = 0;
+  for (let i = 0; i < idsNum.length; i += CHUNK_DEL) {
+    const chunk = idsNum.slice(i, i + CHUNK_DEL);
+    const { data, error } = await supabaseCliente.from('pedidos').delete().in('id', chunk).select('id');
+    if (error) {
+      alert('Error al eliminar en el servidor: ' + error.message);
+      pedidos = prevPedidos;
+      guardarCachePedidos();
+      renderPedidos();
+      actualizarMarcadores();
+      return;
+    }
+    totalBorrados += data && data.length ? data.length : 0;
+  }
+  if (totalBorrados !== idsNum.length) {
+    alert(
+      `Solo se eliminaron ${totalBorrados} de ${idsNum.length} pedidos en Supabase. ` +
+        'Revisa que tu usuario sea administrador (profiles.role) y la política pedidos_delete.'
+    );
+    await cargarPedidosDesdeSupabase();
+    renderPedidos();
+    actualizarMarcadores();
+    return;
+  }
+
   pedidos = [];
   guardarCachePedidos();
+  guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
 }
@@ -2424,6 +3715,7 @@ function normalizarPedidoEnMemoria(p) {
   } else {
     p.assignedTo = normalizarUuidAsignacion(p.assignedTo);
   }
+  p.productos = normalizarProductosPedido(p.productos);
   if (!p.hasOwnProperty('createdBy')) p.createdBy = null;
   if (!Array.isArray(p.productos)) p.productos = [];
   if (!p.hasOwnProperty('mapUrl')) p.mapUrl = '';
@@ -2477,283 +3769,49 @@ async function compactExportABytesBinario(obj) {
   if (typeof CompressionStream === 'undefined') {
     return { bytes: utf8, comprimido: false, jsonChars: raw.length };
   }
+  const uidEvitarDoble = sesionActiva?.user?.id;
+  if (
+    uidEvitarDoble &&
+    uidEvitarDoble === ultimoBootExitosoPorUsuario.userId &&
+    Date.now() - ultimoBootExitosoPorUsuario.ts < 5000 &&
+    Array.isArray(pedidos) &&
+    pedidos.length > 0
+  ) {
+    try {
+      renderPedidos();
+      actualizarMarcadores();
+    } catch (e) {
+      console.error('[app-delivery] re-render tras boot reciente', e);
+    }
+    return;
+  }
+  bootSesionEjecutando = true;
   try {
-    const stream = new Blob([utf8]).stream().pipeThrough(new CompressionStream('gzip'));
-    const compressed = new Uint8Array(await new Response(stream).arrayBuffer());
-    if (compressed.length < utf8.length) {
-      return { bytes: compressed, comprimido: true, jsonChars: raw.length };
-    }
-  } catch (err) {
-    console.warn('[app-delivery] Sin gzip para blob QR:', err);
-  }
-  return { bytes: utf8, comprimido: false, jsonChars: raw.length };
-}
-
-function codificarBlobQrPrefijoD1(bytes) {
-  return QR_BLOB_PREFIX + uint8ToBase64Url(bytes);
-}
-
-function serializarPedidosParaExportar() {
-  return JSON.stringify(
-    {
-      version: EXPORT_JSON_VERSION,
-      exportedAt: new Date().toISOString(),
-      pedidos: deduplicarPedidosPorId(pedidos),
-    },
-    null,
-    2
-  );
-}
-
-function pedidoAObjetoCompacto(p) {
-  if (!p) return { i: 0 };
-  const o = { i: p.id };
-  if (p.nombre) o.n = p.nombre;
-  if (p.telefono) o.t = p.telefono;
-  if (p.direccion) o.d = p.direccion;
-  if (p.valor != null && String(p.valor) !== '0') o.v = p.valor;
-  if (p.textoOriginal) o.x = p.textoOriginal;
-  if (p.mapUrl) o.u = p.mapUrl;
-  if (p.coords && Number.isFinite(Number(p.coords.lat)) && Number.isFinite(Number(p.coords.lng))) {
-    o.c = [
-      Math.round(Number(p.coords.lat) * 1e5) / 1e5,
-      Math.round(Number(p.coords.lng) * 1e5) / 1e5,
-    ];
-  }
-  if (Array.isArray(p.productos) && p.productos.length) o.pr = p.productos;
-  if (p.assignedTo) o.at = p.assignedTo;
-  if (p.createdBy) o.cb = p.createdBy;
-  if (p.enCurso) o.ec = 1;
-  if (p.posicionPendiente != null && p.posicionPendiente !== '') o.pp = p.posicionPendiente;
-  if (p.entregado) o.ee = 1;
-  if (p.noEntregado) o.ne = 1;
-  if (p.envioRecogido) o.er = 1;
-  if (p.notificadoEnCamino) o.nc = 1;
-  if (p.llegoDestino) o.ld = 1;
-  if (p.cancelado) o.ca = 1;
-  if (p.metodoPagoEntrega) o.mp = p.metodoPagoEntrega;
-  if (Number(p.montoNequi)) o.mn = Number(p.montoNequi);
-  if (Number(p.montoDaviplata)) o.md = Number(p.montoDaviplata);
-  if (Number(p.montoEfectivo)) o.me = Number(p.montoEfectivo);
-  return o;
-}
-
-function pedidoDesdeObjetoCompacto(c) {
-  if (!c || typeof c !== 'object') return null;
-  const id = Number(c.i);
-  if (!Number.isFinite(id)) return null;
-  const plain = {
-    id,
-    nombre: c.n,
-    telefono: c.t,
-    direccion: c.d,
-    valor: c.v != null ? c.v : '0',
-    textoOriginal: c.x,
-    mapUrl: c.u,
-    productos: Array.isArray(c.pr) ? c.pr : [],
-    assignedTo: c.at != null ? c.at : null,
-    createdBy: c.cb != null ? c.cb : null,
-    enCurso: !!c.ec,
-    posicionPendiente: c.pp != null ? c.pp : null,
-    entregado: !!c.ee,
-    noEntregado: !!c.ne,
-    envioRecogido: !!c.er,
-    notificadoEnCamino: !!c.nc,
-    llegoDestino: !!c.ld,
-    cancelado: !!c.ca,
-    metodoPagoEntrega: c.mp || '',
-    montoNequi: Number(c.mn ?? 0),
-    montoDaviplata: Number(c.md ?? 0),
-    montoEfectivo: Number(c.me ?? 0),
-  };
-  if (Array.isArray(c.c) && c.c.length >= 2) {
-    plain.coords = { lat: Number(c.c[0]), lng: Number(c.c[1]) };
-  }
-  return pedidoDesdeObjetoImport(plain);
-}
-
-function uint8ToBase64Url(bytes) {
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function base64UrlToUint8Array(b64url) {
-  let b64 = String(b64url || '').replace(/-/g, '+').replace(/_/g, '/');
-  const pad = b64.length % 4;
-  if (pad) b64 += '='.repeat(4 - pad);
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-async function descomprimirGzipBytesAJson(bytes) {
-  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-  const out = await new Response(stream).arrayBuffer();
-  return new TextDecoder('utf-8').decode(out);
-}
-
-/** Legado G1: el Base64 envuelve solo bytes gzip del texto JSON. */
-async function descomprimirGzipBase64UrlABase64Payload(b64url) {
-  const bytes = base64UrlToUint8Array(b64url);
-  return descomprimirGzipBytesAJson(bytes);
-}
-
-async function decodificarPrefijoD1AObjeto(s) {
-  const b64 = s.slice(QR_BLOB_PREFIX.length);
-  if (!b64) throw new Error('Datos incompletos después de D1.');
-  const bytes = base64UrlToUint8Array(b64);
-  let jsonText;
-  if (bytesEmpaquetadosSonGzip(bytes)) {
-    if (typeof DecompressionStream === 'undefined') {
-      throw new Error(
-        'Este navegador no puede abrir el código comprimido. Usa Chrome/Firefox reciente o importa un .json desde Exportar.'
-      );
-    }
-    jsonText = await descomprimirGzipBytesAJson(bytes);
-  } else {
-    jsonText = new TextDecoder('utf-8').decode(bytes);
-  }
-  return JSON.parse(jsonText);
-}
-
-async function prepararCadenaParaQrPedidos() {
-  const lista = deduplicarPedidosPorId(pedidos);
-  const obj = { v: 2, t: Date.now(), p: lista.map(pedidoAObjetoCompacto) };
-  const { bytes, comprimido, jsonChars } = await compactExportABytesBinario(obj);
-  const payloadStr = codificarBlobQrPrefijoD1(bytes);
-  return { payloadStr, comprimido, sinComprimirChars: jsonChars };
-}
-
-async function parsearTextoImportPedidosUniversal(texto) {
-  const s = String(texto || '').trim().replace(/^\uFEFF/, '');
-  if (!s) throw new Error('Vacío');
-  if (s.startsWith(QR_BLOB_PREFIX)) {
-    return decodificarPrefijoD1AObjeto(s);
-  }
-  if (s.startsWith(QR_PAYLOAD_PREFIX_GZIP)) {
-    if (typeof DecompressionStream === 'undefined') {
-      throw new Error(
-        'Este navegador no puede abrir respaldos antiguos (G1). Prueba otro navegador o importa un .json exportado.'
-      );
-    }
-    const inner = await descomprimirGzipBase64UrlABase64Payload(s.slice(QR_PAYLOAD_PREFIX_GZIP.length));
-    return JSON.parse(inner);
-  }
-  return JSON.parse(s);
-}
-
-function exportarPedidosJson() {
-  cerrarMenuUsuario();
-  const blob = new Blob([serializarPedidosParaExportar()], { type: 'application/json;charset=utf-8' });
-  const a = document.createElement('a');
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-  a.href = URL.createObjectURL(blob);
-  a.download = `pedidos-delivery-${stamp}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(a.href);
-}
-
-function pedidoDesdeObjetoImport(o) {
-  if (!o || typeof o !== 'object') return null;
-  const id = Number(o.id);
-  if (!Number.isFinite(id)) return null;
-  let productos = [];
-  if (Array.isArray(o.productos)) productos = o.productos;
-  else if (typeof o.productos === 'string') {
     try {
-      const p = JSON.parse(o.productos);
-      productos = Array.isArray(p) ? p : [];
-    } catch (_e) {
-      productos = [];
-    }
-  }
-  let coords = null;
-  if (o.coords && Number.isFinite(Number(o.coords.lat)) && Number.isFinite(Number(o.coords.lng))) {
-    coords = { lat: Number(o.coords.lat), lng: Number(o.coords.lng) };
-  } else if (o.coords_lat != null && o.coords_lng != null) {
-    const la = Number(o.coords_lat);
-    const ln = Number(o.coords_lng);
-    if (Number.isFinite(la) && Number.isFinite(ln)) coords = { lat: la, lng: ln };
-  }
-  const posPend = Number.isInteger(Number(o.posicionPendiente))
-    ? Number(o.posicionPendiente)
-    : (Number.isInteger(Number(o.posicion_pendiente)) ? Number(o.posicion_pendiente) : null);
-  const merged = {
-    ...pedidoNuevoBase(),
-    id,
-    assignedTo: o.assignedTo != null ? normalizarUuidAsignacion(o.assignedTo) : (o.assigned_to ? normalizarUuidAsignacion(o.assigned_to) : null),
-    createdBy: o.createdBy ?? o.created_by ?? null,
-    nombre: o.nombre || '',
-    telefono: o.telefono || '',
-    direccion: o.direccion || '',
-    valor: String(o.valor != null ? o.valor : '0'),
-    textoOriginal: o.textoOriginal || o.texto_original || '',
-    mapUrl: o.mapUrl || o.map_url || '',
-    coords,
-    productos,
-    enCurso: !!(o.enCurso ?? o.en_curso),
-    posicionPendiente: posPend,
-    entregado: !!o.entregado,
-    noEntregado: !!(o.noEntregado ?? o.no_entregado),
-    envioRecogido: !!(o.envioRecogido ?? o.envio_recogido),
-    notificadoEnCamino: !!(o.notificadoEnCamino ?? o.notificado_en_camino),
-    llegoDestino: !!(o.llegoDestino ?? o.llego_destino),
-    cancelado: !!o.cancelado,
-    metodoPagoEntrega: o.metodoPagoEntrega || o.metodo_pago_entrega || '',
-    montoNequi: Number(o.montoNequi ?? o.monto_nequi ?? 0),
-    montoDaviplata: Number(o.montoDaviplata ?? o.monto_daviplata ?? 0),
-    montoEfectivo: Number(o.montoEfectivo ?? o.monto_efectivo ?? 0),
-  };
-  return normalizarPedidoEnMemoria(merged);
-}
-
-function extraerListaPedidosDeImportParsed(data) {
-  if (!data) return [];
-  if (Array.isArray(data)) return data;
-  if (typeof data === 'object' && data.v === 2 && Array.isArray(data.p)) {
-    return data.p.map(pedidoDesdeObjetoCompacto).filter(Boolean);
-  }
-  if (typeof data === 'object' && Array.isArray(data.pedidos)) return data.pedidos;
-  return [];
-}
-
-function aplicarPedidosImportados(lista) {
-  const mapped = lista.map(pedidoDesdeObjetoImport).filter(Boolean);
-  return deduplicarPedidosPorId(mapped);
-}
-
-function importarPedidosDesdeArchivo(evt) {
-  const file = evt.target && evt.target.files && evt.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = async () => {
-    try {
-      const data = await parsearTextoImportPedidosUniversal(String(reader.result || ''));
-      const lista = extraerListaPedidosDeImportParsed(data);
-      if (lista.length === 0) {
-        alert('El archivo no contiene una lista de pedidos válida.');
-        return;
+      if (sesionActiva?.user?.id) marcarPantallaMain();
+      if (sesionActiva?.user?.id) {
+        try { localStorage.removeItem(CACHE_PEDIDOS_LEGACY_KEY); } catch (_e) {}
+        const cachePrevio = cargarCachePedidos();
+        if (Array.isArray(cachePrevio) && cachePrevio.length > 0) {
+          pedidos = deduplicarPedidosPorId(cachePrevio.map(normalizarPedidoEnMemoria));
+          nextPedidoId = Math.max(...pedidos.map((p) => p.id), 0) + 1;
+        }
       }
-      const reemplazar = confirm(
-        '¿Reemplazar todos los pedidos actuales por los del archivo?\n\n' +
-          'Aceptar = reemplazar todo\n' +
-          'Cancelar = combinar (mismo id: gana el importado)'
-      );
-      const incoming = aplicarPedidosImportados(lista);
-      if (reemplazar) {
-        pedidos = incoming;
-      } else {
-        const byId = new Map(pedidos.map((p) => [Number(p.id), p]));
-        incoming.forEach((p) => byId.set(Number(p.id), p));
-        pedidos = deduplicarPedidosPorId(Array.from(byId.values()));
+      await refrescarPerfilUsuario();
+      try {
+        await aplicarPerfilAdminSiIsAdminRpc();
+      } catch (_e) {}
+      // Cargar pedidos después del perfil: evita RLS/carreras donde el primer SELECT ve 0 filas.
+      for (let i = 0; i < 4; i++) {
+        await cargarPedidosDesdeSupabase();
+        if (pedidos.length > 0) break;
+        const podriaSerAdmin = esAdmin() || esAdminVisual();
+        if (!podriaSerAdmin) break;
+        if (i < 3) await pausaMs(220 + i * 220);
       }
+      if (esAdmin() || esAdminVisual()) await cargarUsuariosParaAdmin();
+      if (sesionActiva) mostrarAppPrincipal();
+      pedidos = pedidos.map(normalizarPedidoEnMemoria);
       if (pedidos.length > 0) {
         nextPedidoId = Math.max(...pedidos.map((p) => p.id), 0) + 1;
       } else {
@@ -2761,15 +3819,49 @@ function importarPedidosDesdeArchivo(evt) {
       }
       guardarPedidos();
       renderPedidos();
-      actualizarMarcadores();
-      alert(`Importación lista: ${incoming.length} pedido(s).`);
-    } catch (e) {
-      console.error(e);
-      alert(
-        'No se pudo leer el archivo. Usa «Exportar JSON» o el código copiado del modal QR (empieza por D1…).'
-      );
-    } finally {
-      evt.target.value = '';
+
+      if (pedidos.length > 0) {
+        ultimoBootExitosoPorUsuario.userId = sesionActiva?.user?.id ?? null;
+        ultimoBootExitosoPorUsuario.ts = Date.now();
+      }
+
+      setTimeout(() => {
+        if (!sesionActiva?.user?.id) return;
+        void (async () => {
+          try {
+            if (!esAdmin() && !esAdminVisual()) return;
+            await aplicarPerfilAdminSiIsAdminRpc();
+            await cargarUsuariosParaAdmin();
+            renderPedidos();
+            actualizarMarcadores();
+          } catch (e) {
+            console.error('[app-delivery] refuerzo usuarios/render tras boot', e);
+          }
+        })();
+      }, 450);
+
+      requestAnimationFrame(() => {
+        try {
+          if (!mapa) initMap();
+          else {
+            mapaAjustado = false;
+            actualizarMarcadores();
+            ajustarMapaConReintentos();
+          }
+          suscribirRealtimePedidos();
+        } catch (mapErr) {
+          console.error(mapErr);
+        }
+      });
+    } catch (err) {
+      console.error('bootSesionYDatos', err);
+      if (sesionActiva) mostrarAppPrincipal();
+    }
+  } finally {
+    bootSesionEjecutando = false;
+    if (bootSesionCola) {
+      bootSesionCola = false;
+      await bootSesionYDatos();
     }
   };
   reader.readAsText(file, 'utf-8');
@@ -2946,8 +4038,61 @@ function iniciarApp() {
     if (wrap && !wrap.contains(ev.target)) cerrarMenuUsuario();
   });
 
-  renderPedidos();
-  requestAnimationFrame(() => {
+  mostrarAuthComprobandoSesion();
+
+  supabaseCliente.auth.onAuthStateChange(async (event, session) => {
+    if (event === 'INITIAL_SESSION') {
+      sesionActiva = session || null;
+      // En recarga, esta es la ruta correcta para arrancar. No dependas de getSession(),
+      // porque en algunos entornos puede quedarse colgado por locks/concurrencia.
+      if (!sesionActiva) {
+        perfilUsuario = null;
+        pedidos = [];
+        mostrarPantallaAuth();
+        return;
+      }
+      // Asegura que el cliente tenga la sesión cargada en memoria para adjuntar JWT en REST/RPC.
+      try { await supabaseCliente.auth.setSession(sesionActiva); } catch (_e) {}
+      if (wasLoginScreenBeforeReload()) {
+        mostrarPantallaAuth();
+        return;
+      }
+      try {
+        await bootSesionYDatos();
+        // Refuerzo: a veces la lista de usuarios admin no entra en el primer tick tras recargar.
+        setTimeout(() => { if (esAdminVisual()) void cargarUsuariosParaAdmin(); }, 1200);
+      } catch (e) {
+        console.error(e);
+        if (sesionActiva) mostrarAppPrincipal();
+      }
+      return;
+    }
+    if (event === 'SIGNED_IN' && enFlujoLoginManual) {
+      sesionActiva = session;
+      return;
+    }
+    const uidAnterior = sesionActiva?.user?.id;
+    sesionActiva = session;
+    if (!session) {
+      reiniciarMarcaUltimoBoot();
+      limpiarCachePedidosUsuario(uidAnterior);
+      perfilUsuario = null;
+      pedidos = [];
+      mostrarPantallaAuth();
+      return;
+    }
+    // Si el usuario estaba en login y recargó, NO auto-entrar aunque exista sesión persistida.
+    if (wasLoginScreenBeforeReload()) {
+      // Importante: no dejar el UI en “Comprobando sesión…”
+      mostrarPantallaAuth();
+      return;
+    }
+    if (event === 'TOKEN_REFRESHED') return;
+    if (event === 'USER_UPDATED') {
+      await refrescarPerfilUsuario();
+      mostrarAppPrincipal();
+      return;
+    }
     try {
       if (!mapa) initMap();
       else {
@@ -2959,6 +4104,45 @@ function iniciarApp() {
       console.error(e);
     }
   });
+
+  try {
+    const { session: sesionDesdeGet, error } = await obtenerSesionInicialConTimeout(6000);
+    if (error) {
+      console.error(error);
+    }
+    // Si getSession() tarda más que el timeout, INITIAL_SESSION / SIGNED_IN ya pueden haber
+    // rellenado sesionActiva; no sobrescribir con null (evita “entré y a los segundos me sacó”).
+    const sesionFinal = sesionDesdeGet ?? sesionActiva;
+    sesionActiva = sesionFinal || null;
+    if (sesionFinal) {
+      if (wasLoginScreenBeforeReload()) {
+        // Mantener login si el usuario estaba en login antes de recargar (sin quedarse en “Comprobando sesión…”).
+        mostrarPantallaAuth();
+        return;
+      }
+      const uidFin = sesionFinal.user?.id ?? null;
+      if (
+        uidFin &&
+        uidFin === ultimoBootExitosoPorUsuario.userId &&
+        Date.now() - ultimoBootExitosoPorUsuario.ts < 5000 &&
+        pedidos.length > 0
+      ) {
+        // INITIAL_SESSION ya ejecutó bootSesionYDatos en esta recarga.
+        return;
+      }
+      try {
+        await bootSesionYDatos();
+      } catch (e) {
+        console.error(e);
+        mostrarAppPrincipal();
+      }
+    } else {
+      mostrarPantallaAuth();
+    }
+  } catch (e) {
+    console.error(e);
+    mostrarPantallaAuth();
+  }
 }
 
 document.addEventListener('DOMContentLoaded', iniciarApp);
