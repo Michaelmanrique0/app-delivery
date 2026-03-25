@@ -566,6 +566,10 @@ async function obtenerSesionInicialConTimeout(ms) {
 
 async function cargarPedidosDesdeSupabase() {
   if (!supabaseCliente || !sesionActiva) return;
+  try {
+    const { data: sesWrap } = await supabaseCliente.auth.getSession();
+    if (sesWrap?.session) sesionActiva = sesWrap.session;
+  } catch (_e) {}
   const maxIntentos = 4;
   for (let intento = 0; intento < maxIntentos; intento++) {
     const res = await withTimeout(
@@ -3609,7 +3613,15 @@ async function bootSesionYDatos() {
           nextPedidoId = Math.max(...pedidos.map((p) => p.id), 0) + 1;
         }
       }
-      await Promise.all([refrescarPerfilUsuario(), cargarPedidosDesdeSupabase()]);
+      await refrescarPerfilUsuario();
+      // Cargar pedidos después del perfil: evita RLS/carreras donde el primer SELECT ve 0 filas.
+      for (let i = 0; i < 4; i++) {
+        await cargarPedidosDesdeSupabase();
+        if (pedidos.length > 0) break;
+        const podriaSerAdmin = esAdmin() || esAdminVisual();
+        if (!podriaSerAdmin) break;
+        if (i < 3) await pausaMs(220 + i * 220);
+      }
       if (esAdminVisual()) await cargarUsuariosParaAdmin();
       if (sesionActiva) mostrarAppPrincipal();
       pedidos = pedidos.map(normalizarPedidoEnMemoria);
