@@ -39,8 +39,8 @@ function mostrarToast(mensaje, tipo = 'info', duracionMs = 5200) {
     host.id = 'appToastHost';
     host.className = 'app-toast-host';
   }
-  // Siempre al final del body para quedar por encima de modales (mismo z-index o capas raras del navegador).
-  document.body.appendChild(host);
+  // Último nodo en <html>: en móvil suele apilar mejor que solo en body (modales + textarea).
+  document.documentElement.appendChild(host);
   const el = document.createElement('div');
   el.className = `app-toast app-toast--${tipo}`;
   el.setAttribute('role', 'status');
@@ -3661,7 +3661,10 @@ function aplicarImportacionPedidosDesdeLista(lista, reemplazar) {
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
-  mostrarToast(`Importación lista: ${incoming.length} pedido(s).`, 'success');
+  cerrarModalImportarRespaldo();
+  requestAnimationFrame(() => {
+    mostrarToast(`Importación lista: ${incoming.length} pedido(s).`, 'success');
+  });
 }
 
 async function importarPedidosDesdeTextoPlano(texto, origen = 'texto pegado') {
@@ -3678,6 +3681,7 @@ async function importarPedidosDesdeTextoPlano(texto, origen = 'texto pegado') {
     mostrarToast(`El ${origen} no contiene una lista de pedidos válida.`, 'error', 8000);
     return false;
   }
+  cerrarModalImportarRespaldo();
   return await new Promise((resolve) => {
     mostrarModalDecision({
       titulo: 'Importar pedidos',
